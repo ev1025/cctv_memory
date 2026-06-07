@@ -39,3 +39,8 @@ python-multipart                # FastAPI 파일 업로드(Form/File)
 
 # ---- 1차 필터 (YOLO; yolo_trigger.py) ---------------------------------------
 ultralytics                     # YOLOv8 사람/객체 감지(VLM 앞단 트리거, #1·2)
+
+# ---- 영상이력 메모리 (memory/; ChromaDB + bge-m3) ---------------------------
+# (원본 3d_vision requirements.txt 누락분 — 마이그레이션 검증에서 보강)
+chromadb                        # vector_store.py: 벡터 DB (영상 구간 색인/검색)
+sentence-transformers           # text_embedder.py: bge-m3 다국어 임베딩
