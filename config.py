@@ -112,3 +112,17 @@ SEGMENT_EVENT_PROMPT = (
     "}\n"
     "</output_format>"
 )
+
+# (비교용) 유형 분류까지 시키는 프롬프트 — 중립 묘사형(SEGMENT_EVENT_PROMPT) 대비 '묘사 차이' 확인용.
+#   scripts/compare_prompts.py 가 같은 구간에 둘을 돌려, 분류를 시키면 묘사가 어떻게 달라지는지 보여준다.
+SEGMENT_CLASSIFY_PROMPT = (
+    "<role>CCTV 영상을 관찰하는 관제 AI.</role>\n"
+    "<task>아래 연속 프레임(같은 구간, 시간순)을 보고 장면을 한국어로 묘사하고, 유형을 분류하라.</task>\n"
+    "<rules>코드블록·여분 텍스트 없이 순수 JSON 객체 하나만 출력.</rules>\n"
+    "<output_format>\n"
+    "{\n"
+    '  "caption": "장면에서 무슨 일이 일어나는지 한국어 1~2문장",\n'
+    '  "event_type": "falldown | fight | invasion | gathering | crowd | flood | normal"\n'
+    "}\n"
+    "</output_format>"
+)
