@@ -1,150 +1,86 @@
-# cctv_memory — CCTV 행동 이력 메모리 (VLM 기반 관제 콘솔)
+# cctv_memory — 설계 분석 보고서
 
-CCTV 녹화 영상을 **VLM이 분석해 사람의 행동·특이사항을 "사건(event)"으로 추출**하고,
-ChromaDB에 색인해 **자연어로 검색**하고 **카메라·시각별 타임라인 이력**으로 관리하는 관제 콘솔.
+CCTV 녹화 영상에서 VLM이 사람의 행동·특이사항을 **"사건(event)"으로 추출**해 색인하고,
+자연어로 검색하며 **카메라·시각별 이력**으로 관리하는 관제 시스템.
 
-> - 입력은 **저장된 CCTV 파일**(오프라인 mp4). 라이브 스트림 추론이 아니라 녹화본 배치 색인.
-> - 화재 감지는 **별도 열화상 카메라**가 담당. 본 시스템은 **행동/이벤트 이력**에 집중.
-> - 로컬 운영 = **RTX 4060 8GB** (bitsandbytes 4bit). 임베딩 bge-m3(CPU).
+이 문서는 실행 방법이 아니라, **무엇을 시도했고 → 어떻게 바뀌었으며 → 왜 바뀌었는지**(설계 변천)를 정리한다.
 
-> **레포 범위:** 이 레포는 **행동 메모리 시스템 전용**입니다.
-> 생성 라인(이미지→텍스트 평가 · 텍스트→이미지 t2i · img2img · 3D화)은 별도 레포 **[ev1025/3D-Vision](https://github.com/ev1025/3D-Vision)** 으로 분리됨.
-> (공유되는 VLM 캡셔너 `image_to_text.py`만 양쪽이 각자 사본 보유 — 공용 코어 없음.)
+> 로컬 운영 = RTX 4060 8GB (4bit). 입력은 저장된 CCTV 파일(오프라인). 화재 감지는 열화상 카메라 담당, 본 시스템은 행동/이벤트 이력에 집중.
 
 ---
 
-## 1. 산출물 (Deliverables)
+## 1. 화재 위험 분류 → 행동 이벤트 메모리  (초점 전환)
 
-| 산출물 | 상태 | 위치 |
-|---|---|---|
-| **관제 콘솔** (React + FastAPI) — 3×3 카메라 그리드 + 실시간 상황 로그 + 자연어 행동 검색 + 사건 타임라인 | ✅ 동작 | `app.py` + `frontend/` → `ui-dist/`, http://localhost:8000 |
-| **사건 메모리 파이프라인** — 영상 → 추적 → VLM 캡션 → 사건 병합 → ChromaDB | ✅ 동작 | `memory/`, 데모 8영상 = **23 사건** 색인 |
-| **CCTV 운용 시뮬레이션** — 샘플 영상에 카메라·녹화시각 부여 → 실제 시각·날짜로 운용 | ✅ 동작 | `outputs/vmem/cctv_map.json` + `cctv_meta.py` |
-| **수집(ingestion) 아키텍처 설계** — 실시간 녹화 → 파일 색인 (§5) | ✅ 설계 | 본 문서 §5 |
-| **실 데이터 확보** — AI-Hub 71850(지능형 관제 CCTV) 실 mp4 영상 13GB | ✅ 보관 | `assets/07.지능형 관제 서비스 CCTV 영상 데이터/` |
+- **시도** — 이미지/영상을 VLM으로 읽어 "위험 유무·유형(화재·연기·낙상·기계 전도)"을 분류. 4종 VLM(Qwen2/2.5/3-VL, InternVL3)을 8GB 4bit로 비교 → **InternVL3 채택**(위험 인지 91%).
+- **문제** — 화재·연기 감지는 **열화상 카메라가 더 정확하고 싸다.** 일반 VLM을 화재 분류에 쓰는 건 강점 낭비.
+- **변화** — 초점을 **"사람 행동·특이사항 이력"** 으로 전환. 분류 기준도 *위험* → *활동(activity)* 으로 바꿈(활동 있으면 다 기록=관제, 정적 배경만 제외, 위험은 그 위 severity).
+- **왜** — 관제의 본질은 "언제 누가 무엇을 했나"의 이력이다. 화재는 별도 센서가 커버하므로 VLM은 **행동 해석**이라는 강점에 집중.
 
-> VLM 모델 비교(4종→InternVL3 채택, 91%) 등 **i2t 평가 산출물은 3d_vision 레포**로 이동.
+## 2. 구간 단위 → 사건(event) 단위 병합
+
+- **시도** — 영상을 5초 구간으로 잘라 구간마다 1레코드 저장.
+- **문제** — "어떤 사람이 02:14에 들어와 5분간 서성였다"가 **수십 개 레코드로 흩어짐.** 이력으로 못 읽음.
+- **변화** — 연속된 활동 구간을 **하나의 사건(시작~종료 + 요약)** 으로 병합(`event_builder`). 같은 유형끼리만 병합해 특이사건은 정확한 시각으로 분리.
+- **왜** — "이력"의 단위는 구간이 아니라 **사건**이다. 타임라인·검색·알림의 단위가 사건이어야 사람이 이해한다.
+
+## 3. 사람 추적(ByteTrack) 도입 — 사실/의미 역할 분담
+
+- **시도** — VLM이 구간을 보고 "배회 중인가"까지 판단하게 함.
+- **문제** — VLM은 **시간 길이(체류)를 못 본다** → 배회 판단이 환각·불안정.
+- **변화** — YOLO+ByteTrack로 사람마다 ID·입장·퇴장·**체류시간(dwell)** 을 결정적으로 산출. **배회는 VLM이 아니라 `dwell_s` 임계로 판정.**
+- **왜** — 시간 기반 사실(체류·입출입)은 추적이 정확하고, 행동의 의미는 VLM이 정확하다. **VLM=무엇을(의미) / 추적=얼마나·언제(사실)** 로 나눈다.
+
+## 4. 고정 taxonomy(A) → 오픈셋 임베딩 분류(B)  ★ 핵심 전환
+
+- **시도(A)** — 색인할 때 VLM이 캡션과 함께 **고정 유형**(낙상·차량접촉·흡연·인화물…)을 직접 분류해 저장.
+- **문제** — 새 유형(싸움·침입·군집)을 추가하려면 **프롬프트를 고치고 전체 재색인(VLM 재실행, 수십 분)** 이 필요. 유형이 코드에 박혀 경직됨.
+- **변화(B)** — 색인 때 VLM은 **캡션(자유 묘사)만** 만들고, 유형은 **캡션 임베딩 ↔ 클래스 설명 임베딩의 유사도**로 분류(`classifier.py` + `event_classes.json`). 클래스를 바꾸면 **재분류(`reclassify.py`)만** — 임베딩 비교라 몇 초, **VLM 재실행 없음.**
+- **왜** — 분류 기준은 현장·요구마다 자주 바뀐다. **색인(무거움)과 분류(가벼움)를 분리**하면 캡션은 한 번만 만들고 유형은 무한히 바꿀 수 있다(Twelve Labs의 index↔classify 분리와 같은 발상). 부수효과로 VLM 출력이 짧아져 색인도 빨라진다.
+
+## 5. 분류형 프롬프트 → 중립 묘사형 프롬프트
+
+- **시도** — 프롬프트에 "흡연·화기·트렁크 열기·쏟아짐" 같은 구체 단서를 넣어 VLM을 유도.
+- **문제** — (B)에선 **캡션이 분류의 재료**인데, 이 단서들이 캡션을 주차장 쪽으로 **편향**시킴 — 실제로 인파밀집 장면을 *"액체가 쏟아져 있습니다"* 로 묘사함(단서 누수).
+- **변화** — 프롬프트를 **"유형으로 분류하지 말고, 무슨 일이 일어나는지 사실대로 묘사하라"** 로 중립화.
+- **왜** — 오픈셋 분류는 캡션이 **중립·사실**이어야 어떤 클래스 목록에도 잘 맞는다. 단서를 박으면 그 단서로 답이 새어 캡션이 오염된다.
+
+## 6. taxonomy를 실제 라벨(GT)에 정렬
+
+- **시도** — 클래스 목록을 임의로 정의(주차장 가정: 배회·차량접촉 등).
+- **문제** — 평가 데이터(AI-Hub 71850)의 **실제 라벨과 클래스가 어긋나** 공정한 평가 불가. (군집/인파밀집을 한 덩어리로 잘못 묶기도 함.)
+- **변화** — 클래스를 AI-Hub GT의 6유형 — **Falldown·Fight·Invasion·Gathering·Crowd·Flood** — 에 정렬.
+- **왜** — 정량 평가의 기준은 실제 라벨이어야 한다. taxonomy = GT 라벨이면 **"A(VLM 직접) vs B(임베딩) vs GT"** 비교가 공정해진다. (라벨엔 정답 유형 + 정확한 사건 시각 + GT 캡션이 들어있음.)
+
+## 7. CCTV 운용 시뮬레이션 — 절대시각 백본
+
+- **시도** — 사건 시각을 영상 내 오프셋(`00:15`)으로 저장.
+- **문제** — 실제 CCTV는 "며칠 몇 시"로 본다. 오프셋만으론 날짜 필터·실시간 로그가 안 맞음.
+- **변화** — 각 영상에 카메라·녹화시각(`recorded_at`)을 부여하고 **사건 절대시각 = 녹화시각 + 오프셋** 으로 복원(`cctv_map.json` + `cctv_meta`). 콘솔이 *"CAM03 10:22:15"* 처럼 실시각·날짜로 표시.
+- **왜** — 관제는 절대시각이 기본. 실 운영(연속 녹화)으로 가기 전, 샘플을 **진짜 CCTV 녹화본처럼** 운용 가능하게 만든다.
+
+## 8. VLM 정식 선정 기준 변경  (진행 중)
+
+- **시도** — i2t(이미지 분류) 성능으로 4종 비교 → InternVL3.
+- **변화** — **영상 행동 색인** 기준으로 후보 3종(InternVL3·Qwen3-VL·Qwen2.5-VL)을 같은 대표 클립에 돌려 비교(`scripts/bench_vlm.py`). 라벨이 있으니 "정답 대비 정확도"로 정량화 가능.
+- **왜** — 이미지 분류 성능 ≠ 영상 캡션 품질. **실제 쓸 작업(영상 행동) 기준**으로 골라야 한다.
 
 ---
 
-## 2. 핵심 설계 — 행동 이벤트 메모리
-
-오프라인 mp4 → 사람·차량 추적 → VLM 행동 캡션 → **연속 활동을 "사건"으로 병합** → ChromaDB 색인 → 자연어 검색 + RAG.
-
-- **렌즈:** 초기엔 "화재 위험" 분류였으나, 화재는 열화상이 담당하므로 **"사람 행동/특이사항 이력"** 으로 전환.
-  분류 기준도 *위험* → *활동(activity)* 으로 변경(활동 있으면 다 기록, 정적 배경만 제외, 위험은 severity로 알림).
-- **사건 단위 병합:** 5초 구간을 그대로 저장하지 않고, 같은 유형의 연속 구간을 **하나의 사건(시작~종료+요약)** 으로 묶음(`event_builder`).
-- **사람 추적(ByteTrack):** 입·출입·체류시간(dwell)을 결정적으로 산출 → **배회(loitering)는 VLM이 아니라 dwell_s 임계로 판정**.
-- **taxonomy:** `fall(낙상) · vehicle_interaction(차량접촉) · smoking(흡연) · flammable(인화물) · loitering(배회) · normal · unknown`.
-- **채택 VLM:** **InternVL3-8B(4bit)** (서버 비교에서 위험 인지 91%로 최고). 13종 후보는 `models.py VLM_REGISTRY`.
-
----
-
-## 3. 현재 워크플로우 (How it works)
+## 현재 아키텍처 (어디에 도달했나)
 
 ```
-[녹화]   IP카메라 ─RTSP→ 녹화기(NVR/ffmpeg, -c copy) → 시간분할 mp4 파일      ← §5 (실 운영, 미구현)
-            └─ (데모) AI-Hub 샘플 mp4 + cctv_map.json 으로 카메라·녹화시각 부여
-
-[색인]   mp4 ──► memory.video_memory.index_video(path, video_id)
-          ① tracker.track_video      YOLO+ByteTrack → 사람·차량 track(등장·퇴장·dwell·이동)   ← VLM 전, 8GB 위해 GPU 선점/해제
-          ② segmenter.segment        5초 그리드 구간(+YOLO 사람 잡힌 구간 촘촘히)
-          ③ VLM(InternVL3-8B 4bit)   구간별 SEGMENT_EVENT_PROMPT → parse_event(JSON)
-          ④ event_builder.build_events  활동 구간을 유형별로 병합 → 사건(배회는 dwell 승격)
-          ⑤ vector_store.add         사건 1개 = ChromaDB 레코드 1줄(+썸네일), event_id 멱등
-
-[조회]   FastAPI(app.py) ──► React 콘솔(ui-dist)
-          /cameras  카메라 그리드            /history  카메라·시각순 이력(실시간 상황 로그)
-          /query    자연어 행동 검색(벡터)    /alerts   특이사건(severity≥1) 알림
-          /segments 카메라 사건 타임라인       /video,/thumb  영상·썸네일 서빙
+영상 ─ tracker(YOLO+ByteTrack) ─ segmenter(5초) ─ VLM(중립 캡션) ─ event_builder(사건 병합) ─ ChromaDB
+                                                                                              │
+                                              [조회 시] classifier(캡션 임베딩 → 오픈셋 유형) ─┘ ─ 콘솔(검색·이력·알림)
 ```
+- **색인(무거움, VLM, 1회)** 과 **분류(가벼움, 임베딩, 재실행 자유)** 를 분리 — 이게 설계의 중심축.
+- 사실(체류·입출입·시각)은 추적·`cctv_meta`가, 의미(행동)는 VLM이.
+- 평가: `scripts/eval_aihub.py`(A vs B vs GT) · `scripts/reclassify.py`(유형 재분류) · `scripts/bench_vlm.py`(VLM 비교).
 
-- **검색 흐름:** 질문 → bge-m3 임베딩 → ChromaDB 벡터검색(유사도 컷 `SEARCH_MIN_SCORE=0.52`, +`event_type` 메타필터) → 사건 카드(유형 칩·체류·시각). 클릭 → 영상 그 시각 점프.
-- **시각/카메라:** `cctv_meta`가 `cctv_map.json`의 `recorded_at`(녹화 시작시각)에서 **사건 절대시각 = recorded_at + 구간오프셋** 을 계산 → 콘솔이 실제 시각(예: `10:22:15`)·날짜·카메라명으로 표시.
-- **온도/열화상:** 현재 `cctv_meta._synth_temp` 합성 플레이스홀더(표시용). 실데이터 전환 = `outputs/vmem/thermal/{id}.json` + `{id}__thermal.mp4` 드롭(코드 수정 불필요).
+## 실 운영 수집 (설계 방향)
 
----
+실 CCTV는 NVR/ffmpeg가 RTSP를 **시간분할 파일**로 저장(녹화는 GPU 무관) → 폴더 워처가 **완결된 파일만** 큐에 넣고 → **단일 GPU 워커**가 배치 색인. 녹화와 색인을 분리하면 8GB 한 장으로도 다카메라를 감당한다. 절대시각은 파일명(`CAM03_20260611_093000.mp4`)에서 복원.
 
-## 4. 아키텍처 / 핵심 모듈
+## 모델·환경
 
-| 파일 | 역할 |
-|---|---|
-| `config.py` | 설정(GPU/4bit·MEMORY_DIR·임베딩)·프롬프트(`SEGMENT_EVENT_PROMPT`·`RAG_ANSWER_PROMPT`)·taxonomy·임계값(`LOITER_DWELL_S`·`EVENT_MERGE_GAP_S`·`SEARCH_MIN_SCORE`) |
-| `models.py` | VLM(12종 레지스트리)·EMBED(bge-m3) 사양 |
-| `image_to_text.py` | `VLMCaptioner` — 4bit VLM 로드/캡션(multi-image, `caption_frames`는 OOM 위해 프레임 2장 제한) |
-| `memory/tracker.py` | YOLO+ByteTrack 추적 패스(사람·차량 ID·dwell·이동) |
-| `memory/segmenter.py` | 5초 그리드 구간 분할(+YOLO 보강) |
-| `memory/video_memory.py` | 오케스트레이터 `index_video`/`query` + `parse_event`(JSON 파싱) |
-| `memory/event_builder.py` | 구간 → 사건 병합(유형별 분리 + dwell 배회 승격) |
-| `memory/vector_store.py` | ChromaDB 래퍼(upsert 멱등 + 메타필터·벡터 검색) |
-| `memory/text_embedder.py` | bge-m3 임베딩(CPU) + Chroma EmbeddingFunction |
-| `cctv_meta.py` | 카메라·날짜·**절대시각**·온도 메타 레이어(`cctv_map.json` override) |
-| `app.py` | FastAPI(콘솔 API + 원본 VLM API + ui-dist 서빙) |
-| `index_all.py` | 데모 배치 색인(여러 영상) |
-| `video/yolo_trigger.py` | YOLO 사람 트리거(segmenter가 `PERSON_CLASS` 재사용) |
-| `frontend/` | React+Vite 콘솔 → `npm run build` → `../ui-dist/` |
-
-### 데이터 모델 (ChromaDB, 컬렉션 `cargo_cctv`)
-사건 1개 = 레코드 1줄. `id="{video_id}:e{n}"`(멱등). metadata(스칼라): `video_id, source, start_s, end_s, duration_s, event_type, severity, person_count, has_vehicle, dwell_s, track_ids(JSON), objects(JSON), thumb, embed_model, vlm_backend, indexed_at`. document = 한국어 사건 요약(임베딩 대상).
-
----
-
-## 5. 실행 방법
-
-```bash
-# venv: 색인/VLM = GPU venv (C:/Users/eg287/venvs/3dvision, torch cu128). 서버(retrieval)만 CPU도 가능.
-
-# 색인 (GPU) — 재색인 전 outputs/vmem/chroma 삭제 + 서버 중지 권장
-CUDA_VISIBLE_DEVICES=0 LOAD_IN_4BIT=1 VLM_BACKEND=internvl3 MAX_SEGMENTS=12 MAX_DURATION=60 \
-  python index_all.py
-#   또는 단일:  python -m memory.video_memory index <mp4> [video_id]
-
-# 검색 (CLI)
-python -m memory.video_memory query "쓰러진 사람" [--type fall] [--k 5]
-
-# 서버 (콘솔 + UI)
-CUDA_VISIBLE_DEVICES=0 python -m uvicorn app:app --host 127.0.0.1 --port 8000   # → http://localhost:8000
-
-# 프론트 개발/빌드
-cd frontend && npm run dev      # http://localhost:5173 (API는 :8000 프록시)
-cd frontend && npm run build    # → ../ui-dist (FastAPI가 서빙)
-```
-> 재색인 후에는 서버를 **재시작**해야 검색 HNSW가 완전 갱신됨. 색인(write)과 서버(read)의 chroma 동시접근은 피할 것.
-
-### CCTV 운용 시뮬레이션 (샘플 → 실 CCTV처럼)
-`outputs/vmem/cctv_map.json`에 영상별 `{camera_id, camera_name, recorded_at}`을 부여하면, 재색인 없이 콘솔이 **실제 카메라·날짜·시각**으로 동작한다(절대시각 = recorded_at + 구간오프셋).
-
----
-
-## 6. 수집(ingestion) 아키텍처 — 실 운영 시 (설계)
-
-실 CCTV는 NVR/ffmpeg가 RTSP를 **시간분할 파일**로 저장 → 그 **완결 파일을 배치 색인**(녹화는 GPU 무관, 색인만 GPU 소비 → 분리).
-
-```
-IP카메라 ─RTSP→ ffmpeg -c copy segment(5분, -strftime 1) → CAM03_20260611_093000.mp4
-   → [워처] 폴더감시 + "직전 완결 세그먼트만" + SQLite 멱등 큐
-   → [단일 GPU 워커] index_video(path, source_started_at, camera_id)   ← 직렬(8GB OOM 방지)
-   → 기존 tracker→VLM→event_builder→ChromaDB (+ camera_id·date_local·absolute_ts)
-```
-- 녹화: **ffmpeg `-c copy` segment**(파일명에 카메라+절대시각) / 다카메라 장기운영은 Frigate 위임.
-- 완료판정: **"직전(N-1) 세그먼트만 처리"**(미완성 파일 색인 방지). 처리량: tracker로 정적·사람0 구간 VLM skip.
-- **절대시각 백본:** `index_video`에 `source_started_at` 인자 → 사건 `absolute_ts`·`date_local` 저장, 날짜 필터 앵커를 `indexed_at`→`date_local`로. (현재 데모는 cctv_map의 recorded_at로 대체)
-
----
-
-## 7. 로드맵 / 다음 작업
-
-- [ ] **타임라인 플레이어(시간 점프 재생)** — 카메라별 클립을 임의 타임라인에 이어붙여 "연속 녹화"처럼 만들고, DateTimePicker 시각 선택 → 영상이 그 시각으로 점프 + 클립 자동 연속재생. 이력 관리는 그대로.
-- [ ] **07 데이터셋으로 footage 채우기** — AI-Hub 71850(실 CCTV 영상) 다수 클립을 카테고리별 카메라에 추가 색인 → 카메라별 하루 타임라인을 촘촘히.
-- [ ] **taxonomy 확장** — 싸움(fight)·침입(intrusion)·군집(crowd) 등 07 카테고리 반영(현재는 normal/unknown으로 떨어짐).
-- [ ] **실 수집 파이프라인 구현** — §6 (ffmpeg 녹화 + 워처 + 큐 + 절대시각 백본).
-- [ ] **VLM 정식 선정 벤치마크** (`bench_vlm.py`) — i2t 평가로 추려진 **후보 3종(InternVL3-8B · Qwen3-VL-8B · Qwen2.5-VL-7B)** 을, 대표 클립(낙상·싸움·침입·군집)의 대표 구간에 `SEGMENT_EVENT_PROMPT` 로 돌려 **캡션 품질 · event_type · 속도 · peak VRAM** 비교 → 영상 색인용 1종 확정. (현재 채택 = InternVL3, i2t 위험판정 91% 기준. **영상 기준 최종 비교 결과 대기 — AI-Hub 색인 후 실행.**)
-
----
-
-## 8. 환경 / 모델
-
-- **로컬(운영):** RTX 4060 8GB · `C:\Users\eg287\venvs\3dvision` · torch cu128 · transformers 5.x · bitsandbytes 4bit · chromadb · sentence-transformers · ultralytics(YOLO+ByteTrack)
-- **프론트:** node 24 · Vite 6 · React 18
-- **모델:** 색인/캡션 VLM = **InternVL3-8B(4bit)** · 임베딩 = **bge-m3**(1024d, 다국어, CPU) · 추적 = **YOLOv8n + ByteTrack**
-- **GitHub:** `ev1025/cctv_memory` (행동 메모리) · 생성 라인은 `ev1025/3D-Vision`
+캡션 = **InternVL3-8B(4bit)** · 임베딩/분류 = **bge-m3**(CPU) · 추적 = **YOLOv8n + ByteTrack** · 저장/검색 = **ChromaDB**(HNSW, cosine). 로컬 RTX 4060 8GB.
