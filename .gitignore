@@ -9,6 +9,7 @@ outputs/
 *.mp4
 *.zip
 *.safetensors
+*.pt
 assets/embedding/
 assets/embeddings/
 assets/aihub/

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from video.yolo_trigger import PERSON_CLASS
+PERSON_CLASS = 0   # COCO: person
 
 # COCO 차량류 — '차량 상호작용' 이벤트 판단용
 VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}

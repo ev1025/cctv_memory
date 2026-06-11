@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from video.yolo_trigger import PERSON_CLASS
+PERSON_CLASS = 0   # COCO: person
 
 
 @dataclass
