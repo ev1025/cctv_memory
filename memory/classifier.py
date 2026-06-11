@@ -13,7 +13,7 @@ import json
 from memory.text_embedder import TextEmbedder
 
 CLASSES_PATH = os.path.join(config.BASE_DIR, "event_classes.json")
-MIN_SCORE = float(os.environ.get("CLASSIFY_MIN_SCORE", "0.7"))   # 이 미만이면 normal(정상 보행 등은 0.6대, 특이사건은 0.78+)
+MIN_SCORE = float(os.environ.get("CLASSIFY_MIN_SCORE", "0.6"))   # 이 미만이면 normal. 실제 캡션은 노이즈 많아 0.7보다 낮춤. CLASSIFY_MIN_SCORE 로 튜닝
 
 
 def load_classes(path=CLASSES_PATH):
