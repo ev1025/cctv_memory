@@ -1,56 +1,71 @@
-import { useState, useRef } from 'react'
-import VideoList from './components/VideoList'
-import Timeline from './components/Timeline'
-import SearchPanel from './components/SearchPanel'
-import { getSegments } from './api'
+import { useState, useEffect } from 'react'
+import Console from './components/Console'
+import DateTimePicker from './components/DateTimePicker'
+import { listCameras } from './api'
+
+const EMPTY = { videoId: null, cameraId: null, time: 0, temp: null, level: null,
+                seekToken: 0, alertId: null, live: false }
 
 export default function App() {
-  const [videoId, setVideoId] = useState(null)
-  const [segments, setSegments] = useState([])
-  const playerRef = useRef(null)
+  const [cameras, setCameras] = useState([])
+  const [dates, setDates] = useState([])
+  const [focus, setFocus] = useState(EMPTY)        // videoId 있으면 포커스 뷰, 없으면 그리드
+  const [thermal, setThermal] = useState(false)    // 일반/열화상 (그리드 전체 / 포커스 뷰어 공통)
+  const [dt, setDt] = useState({ date: '', time: '', live: true })  // 날짜+시간 (live=실시간 추적)
 
-  // 라이브러리에서 영상 선택 → player 로드 + 구간 이력(타임라인) 로드
-  const selectVideo = async (vid) => {
-    setVideoId(vid)
-    const p = playerRef.current
-    if (p) { p.src = `/video/${encodeURIComponent(vid)}`; p.load() }
-    const j = await getSegments(vid)
-    setSegments(j.segments || [])
+  const focusTo = (o) => setFocus(f => ({ ...f, ...o, seekToken: f.seekToken + 1 }))
+  const onSelectCamera = (cam) => focusTo({
+    videoId: cam.videos[0], cameraId: cam.camera_id, time: 0, live: true, temp: null, level: '정상',
+  })
+  const onBack = () => setFocus(EMPTY)
+  const onSeekSeg = (videoId, start, seg) => focusTo({
+    videoId, time: start, live: false,
+    cameraId: (seg && seg.camera_id) || focus.cameraId,
+    temp: seg && seg.temp != null ? seg.temp : focus.temp,
+    level: (seg && seg.level) || focus.level,
+  })
+  const onGoLive = () => {
+    const cam = cameras.find(c => c.camera_id === focus.cameraId)
+    if (cam) onSelectCamera(cam)
   }
 
-  // 구간/검색 결과 클릭 → (필요시 해당 영상 로드 후) 그 시각으로 점프
-  const seek = (vid, s) => {
-    const p = playerRef.current
-    if (!p || !vid) return
-    const src = `/video/${encodeURIComponent(vid)}`
-    if (!(p.src || '').endsWith(src)) {
-      p.src = src
-      setVideoId(vid)
-      getSegments(vid).then(j => setSegments(j.segments || []))
-      p.addEventListener('loadeddata', () => { p.currentTime = s; p.play() }, { once: true })
-    } else {
-      p.currentTime = s
-      p.play()
+  // 날짜·시간 선택 → 이력 모드 / '지금' → 실시간 모드
+  const onPickDt = (date, time) => setDt({ date, time, live: false })
+  const onNowDt = () => setDt(prev => ({ ...prev, live: true }))
+
+  useEffect(() => {
+    listCameras().then(j => { setCameras(j.cameras || []); setDates(j.dates || []) })
+  }, [])
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date(), p = (n) => String(n).padStart(2, '0')
+      const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+      const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+      setDt(prev => prev.live ? { ...prev, date, time } : prev)   // 실시간 모드일 때만 현재로 갱신
     }
-  }
+    tick(); const id = setInterval(tick, 1000); return () => clearInterval(id)
+  }, [])
 
+  const focused = !!focus.videoId
+  const notLive = !dt.live || (focused && !focus.live)        // 실시간 아님(시점 선택 or 영상 점프)
+  const backToLive = () => { onNowDt(); if (focused && !focus.live) onGoLive() }
+  const goHome = () => { setFocus(EMPTY); onNowDt() }   // 브랜드 클릭 → 초기 화면(그리드+실시간)
   return (
     <div className="app">
-      <header>
-        <h1>🎥 Video Memory</h1>
-        <span className="sub">색인된 영상 라이브러리 — 선택해 이력 보기 + 자연어 검색</span>
-      </header>
-      <div className="layout">
-        <VideoList selectedId={videoId} onSelect={selectVideo} />
-        <div className="center">
-          <video ref={playerRef} controls src={videoId ? `/video/${encodeURIComponent(videoId)}` : undefined} />
-          {!videoId && <div className="placeholder">← 왼쪽에서 영상을 선택하세요</div>}
-        </div>
-        <div className="right">
-          <SearchPanel onSeek={seek} />
-          <Timeline segments={segments} videoId={videoId} onSeek={seek} />
+      <div className="topbar">
+        <div className="brand" onClick={goHome} role="button" tabIndex={0}
+             onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && goHome()}
+             title="처음 화면으로"><span className="dot" />CCTV 열화상 관제</div>
+        <DateTimePicker date={dt.date} time={dt.time} live={dt.live} onPick={onPickDt} />
+        {focused && <button className="back-btn" onClick={onBack}>전체 화면</button>}
+        {notLive && <button className="live-btn" onClick={backToLive}><span className="b" />실시간 보기</button>}
+        <div className="view-toggle">
+          <button className={!thermal ? 'on' : ''} onClick={() => setThermal(false)}>일반</button>
+          <button className={thermal ? 'on' : ''} onClick={() => setThermal(true)}>열화상</button>
         </div>
       </div>
+      <Console cameras={cameras} date={dt.date} focus={focus} thermal={thermal}
+               onSelectCamera={onSelectCamera} onSeekSeg={onSeekSeg} onGoLive={onGoLive} />
     </div>
   )
 }

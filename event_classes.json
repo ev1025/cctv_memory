@@ -1,0 +1,8 @@
+[
+  { "key": "falldown",  "label": "쓰러짐",   "severity": 2, "desc": "사람이 갑자기 넘어지거나 계단에서 굴러 바닥에 쓰러져 누움" },
+  { "key": "fight",     "label": "싸움",     "severity": 3, "desc": "한 사람이 다른 사람의 멱살·머리채를 잡고 밀치며 몸싸움·폭행이 발생" },
+  { "key": "invasion",  "label": "침입",     "severity": 2, "desc": "사람이 펜스·담장을 넘어 학교나 제한구역으로 무단 침입" },
+  { "key": "gathering", "label": "군집",     "severity": 1, "desc": "걷던 사람들이 멈춰 서서 한곳에 모여 군집을 형성하고 대화함" },
+  { "key": "crowd",     "label": "인파밀집", "severity": 1, "desc": "다수의 사람이 골목·상가·거리에 빽빽하게 몰려 인파밀집을 이룸" },
+  { "key": "flood",     "label": "침수",     "severity": 2, "desc": "비로 도로·골목이 침수되어 물웅덩이가 형성되고 물에 잠김" }
+]

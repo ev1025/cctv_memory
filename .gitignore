@@ -7,6 +7,10 @@ node_modules/
 frontend/node_modules/
 outputs/
 *.mp4
+*.zip
 *.safetensors
+assets/embedding/
 assets/embeddings/
+assets/aihub/
+assets/07*/
 ui-dist/

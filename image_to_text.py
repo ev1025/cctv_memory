@@ -110,7 +110,7 @@ class VLMCaptioner:
     @torch.inference_mode()
     def caption(self, image, prompt=None):
         image = _to_pil(image)
-        prompt = prompt or config.VLM_PROMPT
+        prompt = prompt or "이 이미지를 한국어로 간단히 설명하세요."
         fn = {
             "moondream": self._caption_moondream,
             "ovis2": self._caption_ovis2,
@@ -126,8 +126,8 @@ class VLMCaptioner:
         """
         if self.type != "standard":
             raise NotImplementedError(f"multi-image 는 standard 백엔드만 지원합니다(현재 type={self.type}).")
-        images = [_to_pil(im) for im in images]
-        prompt = prompt or config.VLM_MULTIFRAME_PROMPT
+        images = [_to_pil(im) for im in images[:2]]   # 프레임 2장 제한 — 8GB GPU multi-image OOM 방지
+        prompt = prompt or "다음 연속 프레임(시간순)의 변화를 바탕으로 장면을 한국어로 간단히 설명하세요."
         content = [{"type": "image", "image": im} for im in images]
         content.append({"type": "text", "text": prompt})
         messages = [{"role": "user", "content": content}]

@@ -8,6 +8,7 @@ VLM 은 호출하지 않는다 — 구간 목록(Segment)만 반환(색인은 vi
 """
 import config  # ★ torch 보다 먼저
 
+import os
 from dataclasses import dataclass
 
 import cv2
@@ -45,6 +46,9 @@ def segment(video_path, seconds=None, frames_per_seg=3, use_yolo=True, yolo_weig
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     dur = (total / fps) if fps else 0.0
+    _maxdur = float(os.environ.get("MAX_DURATION", "0"))
+    if _maxdur > 0 and dur > _maxdur:
+        dur = _maxdur                            # 긴 영상은 앞부분만 색인(데모 시간 제한)
 
     yolo = None
     if use_yolo:

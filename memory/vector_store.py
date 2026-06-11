@@ -6,6 +6,21 @@
 import config  # ★ torch 보다 먼저
 
 import os
+import threading
+
+
+_DEFAULT = None
+_DEFAULT_LOCK = threading.Lock()
+
+
+def default_store():
+    """프로세스 공유 단일 VectorStore(+임베더). 매 요청 재로드 방지 → 검색/조회를 빠르게."""
+    global _DEFAULT
+    with _DEFAULT_LOCK:                       # warmup 스레드와 첫 요청의 동시 생성 방지
+        if _DEFAULT is None:
+            from memory.text_embedder import TextEmbedder
+            _DEFAULT = VectorStore(TextEmbedder())
+    return _DEFAULT
 
 
 class VectorStore:
@@ -49,24 +64,38 @@ class VectorStore:
         return self.col.count()
 
     def list_videos(self):
-        """색인된 영상별 요약 — [{video_id, segments, risks}] (라이브러리 목록용)."""
+        """색인된 영상별 요약 — [{video_id, segments(=사건 수), types}] (라이브러리 목록용)."""
         if self.col.count() == 0:
             return []
         res = self.col.get(include=["metadatas"])
         vids = {}
         for m in res["metadatas"]:
             v = vids.setdefault(m["video_id"],
-                                {"video_id": m["video_id"], "segments": 0, "risks": {}})
+                                {"video_id": m["video_id"], "segments": 0, "types": {},
+                                 "indexed_at": m.get("indexed_at")})
             v["segments"] += 1
-            rt = m.get("risk_type", "none")
-            v["risks"][rt] = v["risks"].get(rt, 0) + 1
+            et = m.get("event_type", "normal")
+            v["types"][et] = v["types"].get(et, 0) + 1
         return sorted(vids.values(), key=lambda x: x["video_id"])
 
     def get_segments(self, video_id):
-        """영상의 전체 구간(시간순) — 타임라인용. [{start_s, end_s, caption, risk_type, severity, thumb}]."""
+        """영상의 전체 사건(시간순) — 타임라인용."""
         res = self.col.get(where={"video_id": video_id}, include=["documents", "metadatas"])
         segs = [{"start_s": m["start_s"], "end_s": m["end_s"], "caption": d,
-                 "risk_type": m.get("risk_type"), "severity": m.get("severity"),
-                 "thumb": m.get("thumb")}
+                 "event_type": m.get("event_type"), "severity": m.get("severity"),
+                 "dwell_s": m.get("dwell_s"), "person_count": m.get("person_count"),
+                 "has_vehicle": m.get("has_vehicle"), "thumb": m.get("thumb")}
                 for d, m in zip(res["documents"], res["metadatas"])]
         return sorted(segs, key=lambda s: s["start_s"])
+
+    def all_segments(self):
+        """전체 영상의 모든 사건(알림·이력 파생용)."""
+        if self.col.count() == 0:
+            return []
+        res = self.col.get(include=["documents", "metadatas"])
+        return [{"video_id": m["video_id"], "start_s": m["start_s"], "end_s": m["end_s"],
+                 "caption": d, "event_type": m.get("event_type"), "severity": m.get("severity"),
+                 "person_count": m.get("person_count"), "dwell_s": m.get("dwell_s"),
+                 "has_vehicle": m.get("has_vehicle"), "thumb": m.get("thumb"),
+                 "indexed_at": m.get("indexed_at")}
+                for d, m in zip(res["documents"], res["metadatas"])]

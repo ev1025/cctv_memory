@@ -30,62 +30,11 @@ REPORT_DIR = os.path.join(OUTPUT_DIR, "reports")  # HTML 리포트 결과물 (ou
 SAMPLE_IMAGE = os.path.join(ASSETS_DIR, "sample_all3.png")  # 단일 실행(main.py) 기본 입력
 
 # ── 4) 단일 실행(main.py) 기본 백엔드 (models.py 레지스트리 키) ───────────────
-VLM_BACKEND = os.environ.get("VLM_BACKEND", "qwen2-vl")
-T2I_BACKEND = os.environ.get("T2I_BACKEND", "sdxl")
+VLM_BACKEND = os.environ.get("VLM_BACKEND", "internvl3")
 
-# ── Image→Text 분류 평가/운영 프롬프트 (메인) ─────────────────────────────────
-#   채점용(4종 모델 비교): 정오가 명확하도록 '예/아니오'·단어로만 답하게 한다.
-#   reports/eval_i2t.py 가 이 둘을 그대로 사용. 운영 상세 분석은 VLM_ANOMALY_PROMPT.
-I2T_RISK_PROMPT = ("이 이미지에 화재·연기·사람 낙상·기계 전도 같은 위험하거나 이상한 상황이 있습니까? "
-                   "'예' 또는 '아니오'로만 답하세요.")
-I2T_TYPE_PROMPT = "상황 유형을 fire / smoke / fall / machine / normal 중 하나의 영어 단어로만 답하세요."
+# (i2t 분류 평가·도형 PoC·multi-image 프롬프트는 3d_vision 레포로 이동됨)
 
-# ── [보류] 도형 PoC 용 프롬프트 (t2i/ 격리, 현재 i2t 평가엔 미사용) ───────────
-VLM_PROMPT = (
-    "이 이미지에 있는 도형들의 앞뒤(겹침) 순서와 위치를 설명하세요. "
-    "맨 앞(가장 위에 겹쳐 보이는)에 있는 도형부터 순서대로, "
-    "'맨 앞에 원, 그 뒤에 삼각형, 맨 뒤에 사각형이 있습니다' 처럼 한국어 한 문장으로 답하세요. "
-    "원, 삼각형, 사각형 중 실제로 보이는 것만 포함하세요."
-)
-# 여러 프레임(영상)을 한 프롬프트에 넣어 시계열 행동을 추론할 때 쓰는 프롬프트 (#3 multi-image)
-VLM_MULTIFRAME_PROMPT = (
-    "다음은 시간 순서대로 나열된 연속된 프레임들입니다(앞쪽이 먼저). "
-    "프레임 간 변화를 바탕으로 장면 속 사람·사물의 행동 흐름을 시간 순서대로 한국어로 간단히 설명하세요."
-)
-# #4 화재 위험 이상행동 분석 — XML 구조화 + CoT(reasoning) + Unknown 클래스로 고도화.
-# 행동 묘사와 이상행동 판단을 1회 추론으로 통합(reasoning 필드가 행동 묘사 역할).
-VLM_ANOMALY_PROMPT = (
-    "<system_role>\n"
-    "당신은 자동차 운송 선박(PCTC) 내부의 화재 위험 및 이상행동을 감지하는 '해양 안전 감시 AI 전문가'입니다.\n"
-    "</system_role>\n\n"
-    "<objective>\n"
-    "제공된 연속 프레임(시간 순서)을 분석하여 작업자의 이상행동 여부를 판단하고, 지정된 JSON 형식으로만 출력하세요.\n"
-    "</objective>\n\n"
-    "<context>\n"
-    "- 이곳은 차량이 밀집된 선박 내부이므로 조도가 낮거나 화질이 떨어질 수 있습니다.\n"
-    "</context>\n\n"
-    # ASK-HINT(2025): 추상적 "이상한가?" 대신 세밀한 상호작용·판별 단서를 명시적으로 질의 → 환각↓·정확도↑
-    "<detection_cues>\n"
-    "추상적으로 '이상한가?'를 묻지 말고, 아래 세밀한 시각 단서를 각각 구체적으로 확인하십시오:\n"
-    "- 흡연: 손이 입 근처로 반복적으로 이동하는가? 손끝이나 입에서 연기나 작은 불빛이 보이는가?\n"
-    "- 화기: 밝은 불꽃·스파크·용접 섬광이 있는가? 그것이 단순 조명 반사광이나 손전등 불빛과 명확히 구분되는가?\n"
-    "- 비인가 출입: 사람이 정해진 통로를 벗어나 차량 사이나 제한 구역으로 들어갔는가?\n"
-    "- 사람-사물 상호작용: 사람의 손이 어떤 사물(라이터·공구·전선·차량)과 접촉하는가? 무엇을 들고 있는가?\n"
-    "</detection_cues>\n\n"
-    "<rules>\n"
-    "1. 환각 방지: 오직 화면에 명확히 픽셀로 존재하는 팩트만 서술하십시오. 불확실한 픽셀, 조명 반사광, 그림자를 화기나 연기로 임의 추측하지 마십시오.\n"
-    "2. 시각적 단계 추론(Visual CoT): 'reasoning' 필드에 먼저 위 detection_cues 를 기준으로 프레임 간 객체의 움직임과 상태 변화를 시간 순서대로(프레임1→2→3) 관찰하여 적은 후, 그 관찰을 근거로 최종 결론을 도출하십시오.\n"
-    "3. 예외 처리: 모션 블러나 조명 부족으로 판단이 불가능한 경우, 억지로 판단하지 말고 risk_level을 \"Unknown\"으로 설정하십시오.\n"
-    "4. 출력 제약: 마크다운 코드블록이나 기타 텍스트를 대 포함하지 말고, 오직 파싱 가능한 순수 JSON 객체 단 하나만 출력하십시오.\n"
-    "</rules>\n\n"
-    "<output_format>\n"
-    "{\n"
-    "  \"reasoning\": \"프레임 1~3의 관찰 결과 요약 및 위험 요소 판단의 논리적 근거\",\n"
-    "  \"risk_level\": \"High\" | \"Low\" | \"Unknown\",\n"
-    "  \"type\": \"smoking\" | \"fire\" | \"intrusion\" | \"none\" | \"unidentified\"\n"
-    "}\n"
-    "</output_format>"
-)
+# (이상행동 분석 프롬프트 VLM_ANOMALY_PROMPT 는 3d_vision 레포로 이동)
 MAX_NEW_TOKENS = 64
 MAX_NEW_TOKENS_MULTI = 384   # reasoning(CoT) + JSON 이라 출력이 길어 넉넉히
 
@@ -108,26 +57,15 @@ def build_quant_config():
     return BitsAndBytesConfig(load_in_8bit=True)
 
 
-# ── 6) T2I 공통 설정 (모델별 steps/guidance/variant 는 models.T2I_REGISTRY) ───
-T2I_DTYPE = torch.float16   # SD/SDXL 모두 fp16 배포본
-T2I_NEGATIVE = ("pattern, seamless pattern, tiled, mosaic, repeated shapes, kaleidoscope, fabric, texture, "
-                "busy, cluttered, many small shapes, "
-                "photo, realistic, 3d render, shadow, blurry, text, watermark")
-SEED = 42  # 재현성
-
-# 한국어 도형 단어 → SD 가 잘 알아듣는 영어 단어 ('직사각형'이 '사각형' 부분문자열 충돌 주의)
-SHAPE_KO2EN = {
-    "원": "circle", "동그라미": "circle",
-    "삼각형": "triangle", "세모": "triangle",
-    "사각형": "square", "네모": "square", "정사각형": "square",
-    "직사각형": "rectangle",
-}
-
-# ── 7) video-memory (영상 이력 RAG) ──────────────────────────────────────────
+# ── video-memory (영상 이력 RAG) ─────────────────────────────────────────────
 #    오프라인 mp4 를 구간별 캡션으로 색인(ChromaDB) → 자연어로 검색+답변.
 MEMORY_DIR = os.path.join(OUTPUT_DIR, "vmem")        # chroma/(인덱스) + thumbs/ — memory/ 코드 폴더와 이름 분리
 SEGMENT_SECONDS = float(os.environ.get("SEGMENT_SECONDS", "5"))   # 고정 그리드 윈도우(초)
 EMBED_BACKEND = os.environ.get("EMBED_BACKEND", "bge-m3")         # models.EMBED_REGISTRY 키
+# 전 구간 무조건 임베딩 X — VLM 이 '특이사항(위험/이상)'으로 판단한 구간만 임베딩(정상 구간 제외).
+EMBED_NOTABLE_ONLY = os.environ.get("EMBED_NOTABLE_ONLY", "1") == "1"
+# 검색 최소 유사도 — 이 미만은 '무관'으로 보고 결과에서 제외(무의미 질의가 top-k 로 안 뜨게).
+SEARCH_MIN_SCORE = float(os.environ.get("SEARCH_MIN_SCORE", "0.52"))
 
 # 구간 색인용 '통합' 분석 프롬프트 — 1회 추론으로 캡션+라벨을 함께. memory.video_memory.parse_risk 가 파싱.
 SEGMENT_RISK_PROMPT = (
@@ -144,4 +82,33 @@ RAG_ANSWER_PROMPT = (
     "다음은 영상에서 검색된 관련 구간들입니다(시각·캡션):\n{context}\n\n"
     "위 구간 정보와 함께 제공된 대표 프레임을 근거로 질문에 한국어로 답하세요. "
     "답변에는 근거가 된 시각을 [MM:SS] 형식으로 인용하세요."
+)
+
+# ── 8) 행동 이벤트 메모리 (주차장 CCTV 행동/특이사항 이력) ─────────────────────
+#    화재 위험 렌즈(SEGMENT_RISK_PROMPT)를 '사람 행동/이벤트' 렌즈로 확장.
+#    역할 분담: VLM 은 '눈에 보이는 행동/사건'을 분류, 시간 기반 이벤트(배회)는 tracker 의 dwell_s 로 판정.
+#    관제 기준 = 활동(activity) 있으면 다 기록, 정적 배경만 임베딩 제외. 위험은 그중 severity/유형으로 알림.
+EVENT_TYPES = ("fall", "vehicle_interaction", "smoking", "flammable", "normal", "unknown")  # VLM 이 부여
+EVENT_TYPES_ALL = EVENT_TYPES + ("loitering",)   # loitering 은 tracker(체류시간)에서 부여
+
+# 배회 판정 — tracker dwell_s 임계(초) + 이동범위(px) 이하면 '머무름'. (실주차장은 60~120s 권장)
+LOITER_DWELL_S = float(os.environ.get("LOITER_DWELL_S", "30"))
+LOITER_MAX_MOVE_PX = float(os.environ.get("LOITER_MAX_MOVE_PX", "250"))
+# 사건 병합 — 연속 구간 간 최대 공백(초). 이 이하로 떨어진 같은 유형/track 구간을 한 사건으로 묶음.
+EVENT_MERGE_GAP_S = float(os.environ.get("EVENT_MERGE_GAP_S", str(SEGMENT_SECONDS * 1.5)))
+
+# 구간 행동 분석 프롬프트 — 1회 추론으로 캡션+활동+이벤트유형을 JSON 으로. memory.video_memory.parse_event 가 파싱.
+SEGMENT_EVENT_PROMPT = (
+    "<role>CCTV 영상을 관찰해 장면을 사실대로 기록하는 관제 AI.</role>\n"
+    "<task>아래 연속 프레임(같은 구간, 시간순)을 보고, 사람과 차량이 무엇을 하는지를 한국어로 구체적으로 묘사하라. "
+    "특이하거나 위험해 보이는 행동(예: 다툼·넘어짐·밀집·무단진입·침수 등 무엇이든)이 있으면 분명히 포함하라.</task>\n"
+    "<rules>1. 화면에 실제로 보이는 사실만 기술. 추측·과장하지 말고 조명 반사·그림자를 임의 해석하지 말 것.\n"
+    "2. 특정 유형으로 '분류'하려 하지 말고, 무슨 일이 일어나는지 그대로 묘사하라(유형 분류는 별도 단계에서 함).\n"
+    "3. 코드블록·여분 텍스트 없이 순수 JSON 객체 단 하나만 출력.</rules>\n"
+    "<output_format>\n"
+    "{\n"
+    '  "caption": "사람·차량이 무엇을 하는지 + 특이행동을 한국어 1~2문장으로 구체적으로",\n'
+    '  "activity": true              // 사람이나 움직임이 있으면 true, 아무도 없는 정적 배경이면 false\n'
+    "}\n"
+    "</output_format>"
 )

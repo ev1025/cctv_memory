@@ -9,11 +9,9 @@ export default defineConfig({
   build: { outDir: '../ui-dist', emptyOutDir: true },
   server: {
     proxy: {
-      '/index-video': API,
-      '/query': API,
-      '/video': API,
-      '/thumb': API,
-      '/memory-status': API,
+      '/index-video': API, '/query': API, '/video': API, '/thumb': API,
+      '/memory-status': API, '/videos': API, '/segments': API,
+      '/cameras': API, '/alerts': API, '/history': API,
     },
   },
 })

@@ -27,16 +27,7 @@ VLM_REGISTRY = {
     "moondream":  {"id": "vikhyatk/moondream2",               "type": "moondream", "label": "moondream2 (1.8B)"},
 }
 
-# ── Text → Image (diffusers) ─────────────────────────────────────────
-#   variant  : fp16 가중치만 받을지(없으면 자동 폴백)
-#   steps    : 디노이징 스텝 (turbo 류는 1~4)
-#   guidance : CFG 강도 (turbo 류는 0 = negative prompt 미사용)
-T2I_REGISTRY = {
-    "sdxl":       {"id": "stabilityai/stable-diffusion-xl-base-1.0",    "variant": "fp16", "steps": 30, "guidance": 6.5, "label": "SDXL Base"},
-    "sd15":       {"id": "stable-diffusion-v1-5/stable-diffusion-v1-5", "variant": None,   "steps": 30, "guidance": 7.5, "label": "SD v1.5"},
-    "sdxl-turbo": {"id": "stabilityai/sdxl-turbo",                      "variant": "fp16", "steps": 4,  "guidance": 0.0, "label": "SDXL-Turbo"},
-    "sd21":       {"id": "stabilityai/stable-diffusion-2-1",            "variant": "fp16", "steps": 30, "guidance": 7.5, "label": "SD 2.1"},
-}
+# (Text→Image 레지스트리 T2I_REGISTRY 는 3d_vision 레포로 이동)
 
 # ── Text → Embedding (sentence-transformers, 다국어) ─────────────────
 #   video-memory 색인/검색용. CPU 로드 기본(8GB VLM 과 VRAM 경쟁 회피).

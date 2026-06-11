@@ -9,6 +9,7 @@ CLI:
 """
 import config  # ★ torch 보다 먼저
 
+import json
 import os
 import re
 import sys
@@ -18,7 +19,7 @@ from PIL import Image
 
 from image_to_text import VLMCaptioner
 from memory.text_embedder import TextEmbedder
-from memory.vector_store import VectorStore
+from memory.vector_store import VectorStore, default_store
 from memory import segmenter
 
 _VALID_TYPES = ("fire", "smoke", "fall", "machine", "none")
@@ -42,29 +43,11 @@ def parse_risk(text):
     4bit VLM 이 형식을 안 지키고 번호·마크다운·영어로 답하는 경우까지 강건하게 파싱한다.
     설명 추출 우선순위: '설명:' → 'Description:' → 라벨/번호/시간이 아닌 첫 긴 줄.
     """
-    # ── 설명(캡션) ──
-    m = re.search(r"설명\s*[:：]\s*(.+)", text)
-    if not m:
-        m = re.search(r"[Dd]escription\s*[:：*]*\s*(.+)", text)
-    if m:
-        caption = m.group(1)
-    else:
-        caption = None
-        for line in text.splitlines():
-            l = line.strip().lstrip("0123456789.-*#) ").strip()
-            if len(l) >= 8 and not re.match(r"(위험|유형|심각도|risk|type|severity|시간|time)", l, re.I):
-                caption = l
-                break
-        caption = caption or text
-    caption = re.sub(r"[*#`]+", "", caption.strip())[:200]
-
-    # ── 위험: '없음' 명시 우선 ──
+    # ── 위험/유형/심각도 먼저 파싱(캡션 폴백에 사용) ──
     risk = None
     rm = re.search(r"위험\s*[:：]?\s*(있음|없음|있|없)", text)
     if rm:
         risk = rm.group(1).startswith("있")
-
-    # ── 유형: '유형:' 줄 우선, 없으면 본문 키워드 ──
     rtype = "none"
     tm = re.search(r"유형\s*[:：]?\s*([A-Za-z]+)", text)
     if tm and tm.group(1).lower() in _VALID_TYPES:
@@ -74,14 +57,118 @@ def parse_risk(text):
             if re.search(rf"\b{t}\b", text, re.I):
                 rtype = t
                 break
-
-    # 위험 미표시 + 유형 있으면 위험으로 간주(일관성)
     if risk is None:
         risk = rtype != "none"
-
     sm = re.search(r"심각도\s*[:：]?\s*([0-3])", text)
     sev = int(sm.group(1)) if sm else (2 if risk else 0)
+
+    # ── 설명(캡션) — 라벨 텍스트가 새지 않도록 강건 추출 ──
+    m = re.search(r"설명\s*[:：]\s*(.+)", text) or re.search(r"[Dd]escription\s*[:：*]*\s*(.+)", text)
+    caption = m.group(1) if m else None
+    if not caption:
+        for line in text.splitlines():
+            l = re.sub(r"^[\s0-9.\-*#)]+", "", line)                       # 앞 번호/기호 제거
+            l = re.split(r"위험\s*[:：]|유형\s*[:：]|심각도\s*[:：]", l)[0]    # 라벨 앞 설명만
+            l = re.sub(r"[*#`]+", "", l).strip(" ,.\t")
+            if len(l) >= 6 and not re.match(r"(위험|유형|심각도|risk|type|severity|시간|time)", l, re.I):
+                caption = l
+                break
+    caption = re.sub(r"[*#`]+", "", (caption or "")).strip(" ,.\t")[:200]
+    # 값만 나열된 응답(예: "없음, none, 0")도 설명 아님 처리 — 라벨값 제거 후 글자 안 남으면 비움
+    if caption and not re.search(r"[가-힣a-zA-Z]",
+            re.sub(r"있음|없음|none|fire|smoke|fall|machine|unknown", "", caption, flags=re.I)):
+        caption = ""
+    if not caption:                                                       # 설명 없으면 유형으로 생성(라벨 누수 방지)
+        caption = (f"{rtype} 의심 상황" if risk and rtype != "none"
+                   else "이상 상황 감지" if risk else "특이사항 없음")
+
     return caption, {"fire": rtype == "fire", "risk": bool(risk), "risk_type": rtype, "severity": sev}
+
+
+# ── 행동 이벤트(SEGMENT_EVENT_PROMPT) 파싱 — JSON 우선 + 휴리스틱 폴백 ──────────
+_EVENT_KEYWORDS = (
+    ("fall",                ("쓰러", "넘어", "낙상", "fall", "collapse", "lying")),
+    ("smoking",             ("담배", "흡연", "smok", "cigarette")),
+    ("flammable",           ("인화", "기름", "유출", "쏟", "spill", "flammable", "gasoline", "fuel")),
+    ("vehicle_interaction", ("트렁크", "보닛", "승하차", "차량", "차문", "trunk", "hood", "vehicle", "car door", "boarding")),
+)
+
+
+def _extract_json(text):
+    """VLM 출력에서 첫 번째 균형 잡힌 JSON 객체를 관대하게 추출(코드펜스·잡텍스트 허용)."""
+    if not text:
+        return None
+    t = re.sub(r"```(?:json)?|```", "", text, flags=re.I).strip()
+    start = t.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(t)):
+        if t[i] == "{":
+            depth += 1
+        elif t[i] == "}":
+            depth -= 1
+            if depth == 0:
+                blob = t[start:i + 1]
+                for cand in (blob, re.sub(r",\s*([}\]])", r"\1", blob)):  # 후행 콤마 보정 재시도
+                    try:
+                        return json.loads(cand)
+                    except json.JSONDecodeError:
+                        continue
+                return None
+    return None
+
+
+def _event_fallback(text):
+    """JSON 파싱 실패 시 키워드 휴리스틱. VLM 이 무언가 말했으면 활동으로 본다."""
+    t = text or ""
+    et = "unknown"
+    for name, kws in _EVENT_KEYWORDS:
+        if any(re.search(k, t, re.I) for k in kws):
+            et = name
+            break
+    line = next((l.strip(" -*#`\t") for l in t.splitlines()
+                 if len(re.sub(r"[^가-힣A-Za-z]", "", l)) >= 6), "")
+    caption = re.sub(r"[*#`]+", "", line).strip()[:200] or "특이 행동 감지"
+    return caption, {"activity": bool(t.strip()), "event_type": et, "objects": [],
+                     "severity": 2 if et not in ("normal", "unknown") else 0}
+
+
+def parse_event(text):
+    """SEGMENT_EVENT_PROMPT 응답(JSON) → (caption, label).
+
+    label = {activity(bool), event_type(str), objects(list[str]), severity(int)}.
+    4bit VLM 이 코드펜스/잡텍스트를 섞어도 첫 JSON 을 추출하고, 실패하면 휴리스틱 폴백.
+    loitering 은 여기서 안 부여(tracker dwell_s 가 event_builder 에서 판정).
+    """
+    obj = _extract_json(text)
+    if obj is None:
+        return _event_fallback(text)
+
+    caption = re.sub(r"[*#`]+", "", str(obj.get("caption") or "")).strip()[:200]
+    et = str(obj.get("event_type") or "unknown").strip().lower()
+    if et not in config.EVENT_TYPES:
+        et = "unknown"
+
+    activity = obj.get("activity")
+    if not isinstance(activity, bool):
+        activity = (et not in ("normal",)) or bool(caption)   # 모호하면 캡션 있을 때 활동으로
+
+    objs = obj.get("objects") or []
+    if not isinstance(objs, list):
+        objs = [objs]
+    objs = [str(o).strip().lower() for o in objs if str(o).strip()][:8]
+
+    try:
+        sev = max(0, min(3, int(obj.get("severity", 0))))
+    except (TypeError, ValueError):
+        sev = 0
+
+    if not caption:
+        caption = {"fall": "사람이 쓰러짐", "vehicle_interaction": "차량과 상호작용",
+                   "smoking": "흡연 의심", "flammable": "인화물질 의심",
+                   "normal": "통상 활동"}.get(et, "특이 행동 감지")
+    return caption, {"activity": bool(activity), "event_type": et, "objects": objs, "severity": sev}
 
 
 def _video_id(path):
@@ -93,54 +180,97 @@ def _fmt_ts(s):
     return f"{s // 60:02d}:{s % 60:02d}"
 
 
+def _resolve_thumb(p):
+    """저장된 thumb 절대경로가 옛 위치(예: 3d_vision)를 가리켜도 현재 MEMORY_DIR/thumbs 로 재매핑."""
+    if not p:
+        return p
+    q = p.replace("\\", "/")
+    return os.path.join(config.MEMORY_DIR, "thumbs", q.split("thumbs/", 1)[1]) if "thumbs/" in q else p
+
+
 def index_video(video_path, video_id=None, vlm_backend=None):
-    """mp4 색인 → ChromaDB. 같은 video_id 재색인은 멱등(id 동일 upsert)."""
+    """mp4 색인 → ChromaDB. 추적→VLM 행동캡션→사건 병합→'사건' 단위 저장.
+
+    재색인 멱등(event_id 동일 upsert). 흐름:
+      ① tracker.track_video  : 사람·차량 ID 타임라인(체류·이동) — VLM 전, 8GB 위해 먼저
+      ② segmenter.segment    : 5초 그리드 구간
+      ③ VLM(SEGMENT_EVENT_PROMPT)+parse_event : 구간별 행동 캡션·유형
+      ④ event_builder        : 활동 구간 인접 병합 → 사건(배회는 dwell_s 로 승격)
+      ⑤ store.add            : 사건 1개 = 레코드 1줄(+썸네일)
+    """
     if not os.path.exists(video_path):
         raise FileNotFoundError(video_path)
     video_id = video_id or _video_id(video_path)
     vlm_backend = vlm_backend or config.VLM_BACKEND
 
+    # ① 추적 패스(YOLO+ByteTrack) — 끝나면 GPU 해제(track_video 내부)
+    from memory import tracker
+    tracks = tracker.track_video(video_path)
+
+    # ② 구간 분할
     segs = segmenter.segment(video_path)
     if not segs:
         print("[index] 구간 없음(코덱 미지원?)", flush=True)
-        return {"video_id": video_id, "segments": 0}
+        return {"video_id": video_id, "segments": 0, "events": 0}
+    _max = int(os.environ.get("MAX_SEGMENTS", "0"))
+    if _max > 0 and len(segs) > _max:
+        segs = segs[:_max]                      # 긴 영상 색인 시간 제한(데모)
 
+    # ③ 구간별 VLM 행동 캡션 → parse_event
     vlm = _get_vlm(vlm_backend)
-    store = VectorStore(TextEmbedder())
+    seg_results = []
+    for i, seg in enumerate(segs):
+        raw = vlm.caption_frames(seg.frames, config.SEGMENT_EVENT_PROMPT)
+        caption, lab = parse_event(raw)
+        seg_results.append((caption, lab))
+        print(f"  seg {i:2d} [{_fmt_ts(seg.start_s)}-{_fmt_ts(seg.end_s)}] "
+              f"{'활동' if lab['activity'] else '·정적'} {lab['event_type']}(sev{lab['severity']})"
+              f" · {caption[:32]}", flush=True)
+
+    # ④ 사건 병합
+    from memory.event_builder import build_events
+    events = build_events(video_id, segs, seg_results, tracks)
+    if not events:
+        print(f"[index] {video_id}: 사건 없음(활동 구간 0)", flush=True)
+        return {"video_id": video_id, "segments": len(segs), "events": 0}
+
+    # ⑤ 썸네일 + 사건 레코드 저장
+    store = default_store()
     thumbs_dir = os.path.join(config.MEMORY_DIR, "thumbs", video_id)
     os.makedirs(thumbs_dir, exist_ok=True)
     stamp = datetime.now().isoformat(timespec="seconds")
-
     records = []
-    for i, seg in enumerate(segs):
-        raw = vlm.caption_frames(seg.frames, config.SEGMENT_RISK_PROMPT)
-        caption, lab = parse_risk(raw)
-        thumb = os.path.join(thumbs_dir, f"seg_{i}.jpg")
-        seg.frames[len(seg.frames) // 2].save(thumb, quality=85)
+    for ev in events:
+        thumb = ""
+        if 0 <= ev.rep_seg < len(segs) and segs[ev.rep_seg].frames:
+            frames = segs[ev.rep_seg].frames
+            thumb = os.path.join(thumbs_dir, ev.event_id.split(":")[-1] + ".jpg")
+            frames[len(frames) // 2].save(thumb, quality=85)
         records.append({
-            "id": f"{video_id}:{i}",
-            "document": caption or raw[:200],
+            "id": ev.event_id,
+            "document": ev.summary,
             "metadata": {
                 "video_id": video_id, "source": os.path.basename(video_path),
-                "start_s": seg.start_s, "end_s": seg.end_s,
-                "trigger": seg.trigger, "person_count": seg.person_count,
-                "fire": lab["fire"], "risk": lab["risk"],
-                "risk_type": lab["risk_type"], "severity": lab["severity"],
+                "start_s": ev.start_s, "end_s": ev.end_s, "duration_s": ev.duration_s,
+                "event_type": ev.event_type, "severity": ev.severity,
+                "person_count": ev.person_count, "has_vehicle": ev.has_vehicle,
+                "dwell_s": ev.dwell_s,
+                "track_ids": json.dumps(ev.track_ids),
+                "objects": json.dumps(ev.objects, ensure_ascii=False),
                 "thumb": thumb, "embed_model": config.EMBED_BACKEND,
                 "vlm_backend": vlm_backend, "indexed_at": stamp,
             },
         })
-        print(f"  seg {i} [{_fmt_ts(seg.start_s)}-{_fmt_ts(seg.end_s)}] "
-              f"{seg.trigger}/{seg.person_count}명 · {lab['risk_type']}(sev{lab['severity']}) · {caption[:30]}", flush=True)
     n = store.add(records)
-    print(f"[index] {video_id}: {n} 구간 색인 완료 (총 {store.count()} 레코드)", flush=True)
-    return {"video_id": video_id, "segments": n}
+    print(f"[index] {video_id}: 사건 {n} 색인 (구간 {len(segs)}, 총 {store.count()})", flush=True)
+    return {"video_id": video_id, "segments": len(segs), "events": n}
 
 
 def query(question, k=5, where=None, vlm_backend=None, answer=True):
     """질문 → 벡터검색 → (선택) VLM RAG 답변. 반환: {answer, segments[]}."""
-    store = VectorStore(TextEmbedder())
+    store = default_store()
     hits = store.search(question, k=k, where=where)
+    hits = [h for h in hits if h["score"] >= config.SEARCH_MIN_SCORE]   # 유사도 임계 미만 제외(무관 질의 차단)
     if not hits:
         return {"answer": "색인된 구간이 없거나 검색 결과가 없습니다.", "segments": []}
 
@@ -148,15 +278,17 @@ def query(question, k=5, where=None, vlm_backend=None, answer=True):
         "video_id": h["metadata"].get("video_id"),
         "start_s": h["metadata"]["start_s"], "end_s": h["metadata"]["end_s"],
         "caption": h["document"], "thumb": h["metadata"].get("thumb"),
-        "score": h["score"], "risk_type": h["metadata"].get("risk_type"),
-        "severity": h["metadata"].get("severity"),
+        "score": h["score"], "event_type": h["metadata"].get("event_type"),
+        "severity": h["metadata"].get("severity"), "dwell_s": h["metadata"].get("dwell_s"),
+        "person_count": h["metadata"].get("person_count"),
+        "has_vehicle": h["metadata"].get("has_vehicle"),
     } for h in hits]
     if not answer:
         return {"answer": None, "segments": segments}
 
     ctx = "\n".join(f"[{_fmt_ts(s['start_s'])}] {s['caption']}" for s in segments)
-    frames = [Image.open(s["thumb"]).convert("RGB")
-              for s in segments if s["thumb"] and os.path.exists(s["thumb"])]
+    frames = [Image.open(_resolve_thumb(s["thumb"])).convert("RGB")
+              for s in segments if _resolve_thumb(s["thumb"]) and os.path.exists(_resolve_thumb(s["thumb"]))]
     prompt = config.RAG_ANSWER_PROMPT.format(question=question, context=ctx)
     if frames:
         vlm = _get_vlm(vlm_backend or config.VLM_BACKEND)
@@ -175,16 +307,18 @@ def _main():
         vid = sys.argv[3] if len(sys.argv) > 3 else None
         print(index_video(sys.argv[2], vid))
     elif cmd == "query":
-        where = {"fire": True} if "--fire" in sys.argv else None
+        where = None
+        if "--type" in sys.argv:                                  # 예: --type fall / loitering
+            where = {"event_type": sys.argv[sys.argv.index("--type") + 1]}
         k = 5
         if "--k" in sys.argv:
             k = int(sys.argv[sys.argv.index("--k") + 1])
         out = query(sys.argv[2], k=k, where=where)
         print("\n=== 답변 ===\n" + str(out["answer"]))
-        print("\n=== 근거 구간 ===")
+        print("\n=== 근거 사건 ===")
         for s in out["segments"]:
             print(f"[{_fmt_ts(s['start_s'])}-{_fmt_ts(s['end_s'])}] "
-                  f"score={s['score']} {s['risk_type']} · {s['caption'][:40]}")
+                  f"score={s['score']} {s['event_type']}(sev{s['severity']}) · {s['caption'][:40]}")
     else:
         print(__doc__)
 
