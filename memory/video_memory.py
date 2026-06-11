@@ -234,55 +234,74 @@ def index_video(video_path, video_id=None, vlm_backend=None):
         print(f"[index] {video_id}: 사건 없음(활동 구간 0)", flush=True)
         return {"video_id": video_id, "segments": len(segs), "events": 0}
 
-    # ⑤ 썸네일 + 사건 레코드 저장
+    # ⑤ 썸네일 + '구간(child)' 레코드 저장 — 사건은 event_id 로 묶임(Parent-Child)
+    #    구간마다 캡션 원문을 그대로 저장(병합·요약 X) → 검색·분류에서 의미 희석 없음.
+    #    유형/심각도는 색인과 분리(오픈셋 분류) — 여기선 unknown/0, reclassify 가 구간별로 채운다.
     store = default_store()
     thumbs_dir = os.path.join(config.MEMORY_DIR, "thumbs", video_id)
     os.makedirs(thumbs_dir, exist_ok=True)
     stamp = datetime.now().isoformat(timespec="seconds")
+
+    def base_meta(ev):
+        return {
+            "video_id": video_id, "source": os.path.basename(video_path),
+            "event_id": ev.event_id, "ev_start_s": ev.start_s, "ev_end_s": ev.end_s,
+            "person_count": ev.person_count, "has_vehicle": ev.has_vehicle, "dwell_s": ev.dwell_s,
+            "track_ids": json.dumps(ev.track_ids), "objects": json.dumps(ev.objects, ensure_ascii=False),
+            "embed_model": config.EMBED_BACKEND, "vlm_backend": vlm_backend, "indexed_at": stamp,
+        }
+
     records = []
     for ev in events:
-        thumb = ""
-        if 0 <= ev.rep_seg < len(segs) and segs[ev.rep_seg].frames:
-            frames = segs[ev.rep_seg].frames
-            thumb = os.path.join(thumbs_dir, ev.event_id.split(":")[-1] + ".jpg")
-            frames[len(frames) // 2].save(thumb, quality=85)
-        records.append({
-            "id": ev.event_id,
-            "document": ev.summary,
-            "metadata": {
-                "video_id": video_id, "source": os.path.basename(video_path),
-                "start_s": ev.start_s, "end_s": ev.end_s, "duration_s": ev.duration_s,
-                "event_type": ev.event_type, "severity": ev.severity,
-                "person_count": ev.person_count, "has_vehicle": ev.has_vehicle,
-                "dwell_s": ev.dwell_s,
-                "track_ids": json.dumps(ev.track_ids),
-                "objects": json.dumps(ev.objects, ensure_ascii=False),
-                "thumb": thumb, "embed_model": config.EMBED_BACKEND,
-                "vlm_backend": vlm_backend, "indexed_at": stamp,
-            },
-        })
+        if not ev.seg_indices:                       # 추적기반 사건(배회) — 구간 없음, 합성 1레코드
+            records.append({"id": ev.event_id, "document": ev.summary, "metadata": {
+                **base_meta(ev), "start_s": ev.start_s, "end_s": ev.end_s,
+                "event_type": ev.event_type, "severity": ev.severity, "by_tracker": True, "thumb": "",
+            }})
+            continue
+        for si in ev.seg_indices:                    # 구간마다 1레코드(캡션 원문 보존)
+            seg, cap = segs[si], seg_results[si][0]
+            thumb = ""
+            if seg.frames:
+                thumb = os.path.join(thumbs_dir, f"s{si}.jpg")
+                seg.frames[len(seg.frames) // 2].save(thumb, quality=85)
+            records.append({"id": f"{video_id}:s{si}", "document": cap, "metadata": {
+                **base_meta(ev), "start_s": seg.start_s, "end_s": seg.end_s,
+                "event_type": "unknown", "severity": 0, "thumb": thumb,
+            }})
     n = store.add(records)
-    print(f"[index] {video_id}: 사건 {n} 색인 (구간 {len(segs)}, 총 {store.count()})", flush=True)
-    return {"video_id": video_id, "segments": len(segs), "events": n}
+    print(f"[index] {video_id}: 구간 {n} 색인 / 사건 {len(events)} (총 {store.count()})", flush=True)
+    return {"video_id": video_id, "segments": len(segs), "events": len(events)}
 
 
 def query(question, k=5, where=None, vlm_backend=None, answer=True):
-    """질문 → 벡터검색 → (선택) VLM RAG 답변. 반환: {answer, segments[]}."""
+    """질문 → 구간 벡터검색 → event_id 로 묶어 사건 단위 반환. 반환: {answer, segments[]}.
+
+    구간 단위로 매칭(의미 희석 없음)하고, 같은 사건이 여러 구간 걸리면 '최고 점수 구간'을 대표로
+    1건만 보여준다(start_s = 그 구간 시각 = 정확 seek). 정렬 = 최고 유사도순.
+    """
     store = default_store()
-    hits = store.search(question, k=k, where=where)
+    hits = store.search(question, k=max(k * 4, 12), where=where)        # 구간 단위라 넉넉히 뽑아 묶음
     hits = [h for h in hits if h["score"] >= config.SEARCH_MIN_SCORE]   # 유사도 임계 미만 제외(무관 질의 차단)
     if not hits:
         return {"answer": "색인된 구간이 없거나 검색 결과가 없습니다.", "segments": []}
 
+    by_event = {}                                                       # event_id → 최고점수 구간
+    for h in hits:
+        eid = h["metadata"].get("event_id") or h["id"]
+        if eid not in by_event or h["score"] > by_event[eid]["score"]:
+            by_event[eid] = h
+    top = sorted(by_event.values(), key=lambda h: h["score"], reverse=True)[:k]
+
     segments = [{
         "video_id": h["metadata"].get("video_id"),
-        "start_s": h["metadata"]["start_s"], "end_s": h["metadata"]["end_s"],
+        "start_s": h["metadata"]["start_s"], "end_s": h["metadata"]["end_s"],   # 대표 구간 = 정확 seek
         "caption": h["document"], "thumb": h["metadata"].get("thumb"),
         "score": h["score"], "event_type": h["metadata"].get("event_type"),
         "severity": h["metadata"].get("severity"), "dwell_s": h["metadata"].get("dwell_s"),
         "person_count": h["metadata"].get("person_count"),
         "has_vehicle": h["metadata"].get("has_vehicle"),
-    } for h in hits]
+    } for h in top]
     if not answer:
         return {"answer": None, "segments": segments}
 

@@ -49,4 +49,14 @@ for n, vid in enumerate(clips, 1):
         traceback.print_exc()
         print(f"[FAIL] {vid}: {e}", flush=True)
         fail.append(vid)
-print(f"\n===== ALL DONE — 성공 {len(ok)} / 실패 {len(fail)}: {fail} =====", flush=True)
+print(f"\n===== 색인 완료 — 성공 {len(ok)} / 실패 {len(fail)}: {fail} =====", flush=True)
+
+# ── 3) 오픈셋 분류 (구간 캡션 → event_classes.json) — 색인과 분리된 단계지만 한 번에 실행 ──
+if ok:
+    print("\n===== 재분류(오픈셋) =====", flush=True)
+    try:
+        from scripts.reclassify import main as reclassify
+        reclassify()
+    except Exception:
+        traceback.print_exc()
+print("\n===== ALL DONE =====", flush=True)

@@ -19,17 +19,23 @@ def main():
         return
 
     clf = EventClassifier()
-    new_metas, counts = [], {}
-    for doc, meta, emb in zip(res["documents"], res["metadatas"], res["embeddings"]):
-        r = clf.classify_vec(list(emb))            # 저장된 임베딩 재사용(재임베딩 X)
+    upd_ids, upd_metas, counts = [], [], {}
+    for id_, meta, emb in zip(ids, res["metadatas"], res["embeddings"]):
+        if meta.get("by_tracker"):                 # 추적기반 사건(배회)은 분류기 건드리지 않음
+            et = meta.get("event_type", "loitering")
+            counts[et] = counts.get(et, 0) + 1
+            continue
+        r = clf.classify_vec(list(emb))            # 저장된 구간 임베딩 재사용(재임베딩 X)
         m = dict(meta)
         m["event_type"] = r["event_type"]
         m["severity"] = r["severity"]
-        new_metas.append(m)
+        upd_ids.append(id_)
+        upd_metas.append(m)
         counts[r["event_type"]] = counts.get(r["event_type"], 0) + 1
 
-    store.col.update(ids=ids, metadatas=new_metas)
-    print(f"재분류 {len(ids)}건 → {dict(sorted(counts.items(), key=lambda x: -x[1]))}", flush=True)
+    if upd_ids:
+        store.col.update(ids=upd_ids, metadatas=upd_metas)
+    print(f"재분류 {len(upd_ids)}구간 → {dict(sorted(counts.items(), key=lambda x: -x[1]))}", flush=True)
     print("RECLASSIFY_DONE")
 
 
