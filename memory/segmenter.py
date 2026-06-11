@@ -39,9 +39,10 @@ def _seg_frames(cap, start_s, end_s, fps, k):
     return [f for f in (_grab(cap, i) for i in idxs) if f]
 
 
-def segment(video_path, seconds=None, frames_per_seg=3, use_yolo=True, yolo_weights="yolov8n.pt"):
+def segment(video_path, seconds=None, frames_per_seg=None, use_yolo=True, yolo_weights="yolov8n.pt"):
     """mp4 → [Segment…]. 사람 잡힌 구간은 frames 를 더 촘촘히(+2장) 뽑고 trigger='yolo'."""
     seconds = seconds or config.SEGMENT_SECONDS
+    frames_per_seg = frames_per_seg or config.SEGMENT_FRAMES   # 기본 = env SEGMENT_FRAMES (동작 인식 위해 늘림)
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0

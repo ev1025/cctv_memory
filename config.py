@@ -61,6 +61,9 @@ def build_quant_config():
 #    오프라인 mp4 를 구간별 캡션으로 색인(ChromaDB) → 자연어로 검색+답변.
 MEMORY_DIR = os.path.join(OUTPUT_DIR, "vmem")        # chroma/(인덱스) + thumbs/ — memory/ 코드 폴더와 이름 분리
 SEGMENT_SECONDS = float(os.environ.get("SEGMENT_SECONDS", "5"))   # 고정 그리드 윈도우(초)
+SEGMENT_FRAMES = int(os.environ.get("SEGMENT_FRAMES", "3"))        # 구간당 VLM 입력 프레임 수 (많을수록 동작 인식↑, hailo 교훈)
+CHROMA_SUBDIR = os.environ.get("CHROMA_SUBDIR", "chroma")          # 모델 병렬 비교 시 모델별 별도 chroma
+THUMBS_SUBDIR = os.environ.get("THUMBS_SUBDIR", "thumbs")          # 〃 모델별 별도 thumbs
 EMBED_BACKEND = os.environ.get("EMBED_BACKEND", "bge-m3")         # models.EMBED_REGISTRY 키
 # 전 구간 무조건 임베딩 X — VLM 이 '특이사항(위험/이상)'으로 판단한 구간만 임베딩(정상 구간 제외).
 EMBED_NOTABLE_ONLY = os.environ.get("EMBED_NOTABLE_ONLY", "1") == "1"

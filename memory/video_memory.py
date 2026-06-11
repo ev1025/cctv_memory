@@ -238,7 +238,7 @@ def index_video(video_path, video_id=None, vlm_backend=None):
     #    구간마다 캡션 원문을 그대로 저장(병합·요약 X) → 검색·분류에서 의미 희석 없음.
     #    유형/심각도는 색인과 분리(오픈셋 분류) — 여기선 unknown/0, reclassify 가 구간별로 채운다.
     store = default_store()
-    thumbs_dir = os.path.join(config.MEMORY_DIR, "thumbs", video_id)
+    thumbs_dir = os.path.join(config.MEMORY_DIR, config.THUMBS_SUBDIR, video_id)
     os.makedirs(thumbs_dir, exist_ok=True)
     stamp = datetime.now().isoformat(timespec="seconds")
 

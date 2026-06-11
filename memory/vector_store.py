@@ -64,7 +64,7 @@ def group_events(rows):
 class VectorStore:
     def __init__(self, embedder, collection="cargo_cctv"):
         import chromadb
-        path = os.path.join(config.MEMORY_DIR, "chroma")
+        path = os.path.join(config.MEMORY_DIR, config.CHROMA_SUBDIR)
         os.makedirs(path, exist_ok=True)
         self.client = chromadb.PersistentClient(path=path)
         from memory.text_embedder import ChromaEmbedder
