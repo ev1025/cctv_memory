@@ -1,6 +1,6 @@
 """memory/video_memory.py — 오케스트레이터 (index / query).
 
-index_video(): mp4 → segmenter → VLM 통합 캡션 → parse_risk → ChromaDB upsert(+썸네일).
+index_video(): mp4 → segmenter → VLM 행동 캡션 → parse_event → ChromaDB upsert(+썸네일).
 query():       질문 → 벡터검색(+메타필터) → 대표 프레임+캡션 → VLM RAG 답변(근거 인용).
 
 CLI:
@@ -18,11 +18,8 @@ from datetime import datetime
 from PIL import Image
 
 from image_to_text import VLMCaptioner
-from memory.text_embedder import TextEmbedder
-from memory.vector_store import VectorStore, default_store
+from memory.vector_store import default_store
 from memory import segmenter
-
-_VALID_TYPES = ("fire", "smoke", "fall", "machine", "none")
 
 # VLM 슬롯 캐시 — query/index 간 재사용(매 호출 ~1.5분 재로드 방지). 같은 프로세스에 상주.
 _VLM_SLOT = {"backend": None, "obj": None}
@@ -35,54 +32,6 @@ def _get_vlm(backend):
         _VLM_SLOT["obj"] = VLMCaptioner(backend).load()
         _VLM_SLOT["backend"] = backend
     return _VLM_SLOT["obj"]
-
-
-def parse_risk(text):
-    """SEGMENT_RISK_PROMPT 응답 → (caption, label).
-
-    4bit VLM 이 형식을 안 지키고 번호·마크다운·영어로 답하는 경우까지 강건하게 파싱한다.
-    설명 추출 우선순위: '설명:' → 'Description:' → 라벨/번호/시간이 아닌 첫 긴 줄.
-    """
-    # ── 위험/유형/심각도 먼저 파싱(캡션 폴백에 사용) ──
-    risk = None
-    rm = re.search(r"위험\s*[:：]?\s*(있음|없음|있|없)", text)
-    if rm:
-        risk = rm.group(1).startswith("있")
-    rtype = "none"
-    tm = re.search(r"유형\s*[:：]?\s*([A-Za-z]+)", text)
-    if tm and tm.group(1).lower() in _VALID_TYPES:
-        rtype = tm.group(1).lower()
-    else:
-        for t in ("fire", "smoke", "fall", "machine"):
-            if re.search(rf"\b{t}\b", text, re.I):
-                rtype = t
-                break
-    if risk is None:
-        risk = rtype != "none"
-    sm = re.search(r"심각도\s*[:：]?\s*([0-3])", text)
-    sev = int(sm.group(1)) if sm else (2 if risk else 0)
-
-    # ── 설명(캡션) — 라벨 텍스트가 새지 않도록 강건 추출 ──
-    m = re.search(r"설명\s*[:：]\s*(.+)", text) or re.search(r"[Dd]escription\s*[:：*]*\s*(.+)", text)
-    caption = m.group(1) if m else None
-    if not caption:
-        for line in text.splitlines():
-            l = re.sub(r"^[\s0-9.\-*#)]+", "", line)                       # 앞 번호/기호 제거
-            l = re.split(r"위험\s*[:：]|유형\s*[:：]|심각도\s*[:：]", l)[0]    # 라벨 앞 설명만
-            l = re.sub(r"[*#`]+", "", l).strip(" ,.\t")
-            if len(l) >= 6 and not re.match(r"(위험|유형|심각도|risk|type|severity|시간|time)", l, re.I):
-                caption = l
-                break
-    caption = re.sub(r"[*#`]+", "", (caption or "")).strip(" ,.\t")[:200]
-    # 값만 나열된 응답(예: "없음, none, 0")도 설명 아님 처리 — 라벨값 제거 후 글자 안 남으면 비움
-    if caption and not re.search(r"[가-힣a-zA-Z]",
-            re.sub(r"있음|없음|none|fire|smoke|fall|machine|unknown", "", caption, flags=re.I)):
-        caption = ""
-    if not caption:                                                       # 설명 없으면 유형으로 생성(라벨 누수 방지)
-        caption = (f"{rtype} 의심 상황" if risk and rtype != "none"
-                   else "이상 상황 감지" if risk else "특이사항 없음")
-
-    return caption, {"fire": rtype == "fire", "risk": bool(risk), "risk_type": rtype, "severity": sev}
 
 
 # ── 행동 이벤트(SEGMENT_EVENT_PROMPT) 파싱 — JSON 우선 + 휴리스틱 폴백 ──────────
@@ -135,40 +84,32 @@ def _event_fallback(text):
 
 
 def parse_event(text):
-    """SEGMENT_EVENT_PROMPT 응답(JSON) → (caption, label).
+    """SEGMENT_EVENT_PROMPT 응답 → (caption, label).
 
-    label = {activity(bool), event_type(str), objects(list[str]), severity(int)}.
-    4bit VLM 이 코드펜스/잡텍스트를 섞어도 첫 JSON 을 추출하고, 실패하면 휴리스틱 폴백.
-    loitering 은 여기서 안 부여(tracker dwell_s 가 event_builder 에서 판정).
+    현재 프롬프트는 '캡션: … / 활동: 있음' 줄 형식(소형 모델엔 JSON 보다 안정적 — hailo 교훈).
+    옛 JSON 형식도 폴백 파싱. event_type/severity 는 분류기(classifier)가 별도로 채우므로 여기선 unknown/0.
     """
-    obj = _extract_json(text)
-    if obj is None:
-        return _event_fallback(text)
+    t = text or ""
+    m = re.search(r"캡션\s*[:：]\s*(.+)", t)
+    caption = re.split(r"활동\s*[:：]", m.group(1))[0] if m else None     # 같은 줄에 '활동:' 붙으면 잘라냄
+    am = re.search(r"활동\s*[:：]?\s*(있음|없음|있|없|true|false|yes|no)", t, re.I)
+    activity = am.group(1).lower().startswith(("있", "t", "y")) if am else None
 
-    caption = re.sub(r"[*#`]+", "", str(obj.get("caption") or "")).strip()[:200]
-    et = str(obj.get("event_type") or "unknown").strip().lower()
-    if et not in config.EVENT_TYPES:
-        et = "unknown"
+    if caption is None:                                                  # JSON 폴백(옛 형식 호환)
+        obj = _extract_json(t)
+        if obj is not None:
+            caption = obj.get("caption")
+            if activity is None and isinstance(obj.get("activity"), bool):
+                activity = obj.get("activity")
+    if caption is None:                                                  # 휴리스틱 폴백
+        return _event_fallback(t)
 
-    activity = obj.get("activity")
-    if not isinstance(activity, bool):
-        activity = (et not in ("normal",)) or bool(caption)   # 모호하면 캡션 있을 때 활동으로
-
-    objs = obj.get("objects") or []
-    if not isinstance(objs, list):
-        objs = [objs]
-    objs = [str(o).strip().lower() for o in objs if str(o).strip()][:8]
-
-    try:
-        sev = max(0, min(3, int(obj.get("severity", 0))))
-    except (TypeError, ValueError):
-        sev = 0
-
+    caption = re.sub(r'[*#`{}"]+', "", str(caption)).strip(" ,.\t")[:200]
+    if activity is None:
+        activity = bool(caption)
     if not caption:
-        caption = {"fall": "사람이 쓰러짐", "vehicle_interaction": "차량과 상호작용",
-                   "smoking": "흡연 의심", "flammable": "인화물질 의심",
-                   "normal": "통상 활동"}.get(et, "특이 행동 감지")
-    return caption, {"activity": bool(activity), "event_type": et, "objects": objs, "severity": sev}
+        caption = "특이 행동 감지"
+    return caption, {"activity": bool(activity), "event_type": "unknown", "objects": [], "severity": 0}
 
 
 def _video_id(path):

@@ -42,15 +42,13 @@ export default function DateTimePicker({ date, time, live, onPick }) {
 
   return (
     <div className="dtpicker" ref={ref}>
-      <button className={`dt-trigger ${live ? 'live' : 'hist'}`}
-              onClick={() => setOpen(o => { if (!o) setView(null); return !o })} title="날짜·시간 선택">
+      <button className="dt-trigger" onClick={() => setOpen(o => { if (!o) setView(null); return !o })}
+              title="날짜 선택">
         <svg className="dt-ico" width="14" height="14" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <circle cx="12" cy="12" r="9" /><path d="M12 7.5v4.8l3 1.8" />
+          <rect x="3" y="4.5" width="18" height="16" rx="2" /><path d="M3 9.5h18M8 2.5v4M16 2.5v4" />
         </svg>
         <span className="dt-d">{date}</span>
-        <span className="dt-t">{time}</span>
-        <span className="dt-dot" />
       </button>
       {open && (
         <div className="dt-pop">
@@ -66,18 +64,6 @@ export default function DateTimePicker({ date, time, live, onPick }) {
                       className={`dt-day ${d === D && vy === Y && vm === M ? 'on' : ''}`}
                       onClick={() => pickDay(d)}>{d}</button>
             ) : <span key={i} />)}
-          </div>
-          <div className="dt-time">
-            {['h', 'm', 's'].map((f, i) => (
-              <Fragment key={f}>
-                {i > 0 && <span className="dt-colon">:</span>}
-                <div className="dt-tf">
-                  <button type="button" onClick={() => bump(f, -1)} aria-label="이전">▲</button>
-                  <span>{pad(T[f])}</span>
-                  <button type="button" onClick={() => bump(f, 1)} aria-label="다음">▼</button>
-                </div>
-              </Fragment>
-            ))}
           </div>
         </div>
       )}

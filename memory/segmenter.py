@@ -1,10 +1,12 @@
-"""memory/segmenter.py — 하이브리드 구간 분할 (5초 그리드 + YOLO 보강).
+"""memory/segmenter.py — 고정 그리드 구간 분할.
 
-고정 그리드(SEGMENT_SECONDS)로 영상 전체를 빠짐없이 커버하고,
-YOLO 가 사람을 잡은 구간은 대표 프레임을 더 촘촘히 뽑는다(시계열 단서 강화).
+영상 전체를 SEGMENT_SECONDS 그리드로 빠짐없이 잘라, 각 구간에서 SEGMENT_FRAMES 장(시간순)을 뽑는다.
 VLM 은 호출하지 않는다 — 구간 목록(Segment)만 반환(색인은 video_memory 가 수행).
 
-[비고] YOLO 가중치(yolov8n.pt)는 최초 1회 자동 다운로드. 실패 시 그리드만으로 폴백.
+[설계] 사람·차량 등장/체류는 tracker(YOLO+ByteTrack)가 전체 영상에서 이미 판정한다(tracks_in_window).
+       그래서 구간 분할 단계에서 YOLO 를 또 돌리지 않는다(중복 제거 — 예전엔 구간 중앙 1프레임에
+       YOLO 를 재실행해 +2 프레임을 보강했으나, 프레임 수를 키운 지금은 실익이 없고 tracker 와 중복).
+       활동(activity) 판정은 VLM 캡션(parse_event)이, person_count 는 tracker 가 담당한다.
 """
 import config  # ★ torch 보다 먼저
 
@@ -12,10 +14,7 @@ import os
 from dataclasses import dataclass
 
 import cv2
-import numpy as np
 from PIL import Image
-
-PERSON_CLASS = 0   # COCO: person
 
 
 @dataclass
@@ -23,8 +22,8 @@ class Segment:
     start_s: float
     end_s: float
     frames: list           # list[PIL.Image] — 시간순 대표 프레임
-    trigger: str = "grid"  # "grid" | "yolo"
-    person_count: int = 0
+    trigger: str = "grid"  # 항상 grid (YOLO 보강 제거). 필드는 하위호환 위해 유지.
+    person_count: int = 0  # 구간 단위는 미사용 — 이벤트 person_count 는 tracker 가 채움.
 
 
 def _grab(cap, idx):
@@ -39,10 +38,10 @@ def _seg_frames(cap, start_s, end_s, fps, k):
     return [f for f in (_grab(cap, i) for i in idxs) if f]
 
 
-def segment(video_path, seconds=None, frames_per_seg=None, use_yolo=True, yolo_weights="yolov8n.pt"):
-    """mp4 → [Segment…]. 사람 잡힌 구간은 frames 를 더 촘촘히(+2장) 뽑고 trigger='yolo'."""
+def segment(video_path, seconds=None, frames_per_seg=None):
+    """mp4 → [Segment…]. SEGMENT_SECONDS 그리드로 자르고 구간당 SEGMENT_FRAMES 장(균등) 추출."""
     seconds = seconds or config.SEGMENT_SECONDS
-    frames_per_seg = frames_per_seg or config.SEGMENT_FRAMES   # 기본 = env SEGMENT_FRAMES (동작 인식 위해 늘림)
+    frames_per_seg = frames_per_seg or config.SEGMENT_FRAMES   # 구간당 VLM 입력 프레임 수
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
@@ -51,34 +50,14 @@ def segment(video_path, seconds=None, frames_per_seg=None, use_yolo=True, yolo_w
     if _maxdur > 0 and dur > _maxdur:
         dur = _maxdur                            # 긴 영상은 앞부분만 색인(데모 시간 제한)
 
-    yolo = None
-    if use_yolo:
-        try:
-            from ultralytics import YOLO
-            yolo = YOLO(yolo_weights)
-        except Exception as e:
-            print(f"[segmenter] YOLO 미사용(그리드만): {e}", flush=True)
-
     segs = []
     t = 0.0
     while t < dur:
         e = min(t + seconds, dur)
         frames = _seg_frames(cap, t, e, fps, frames_per_seg)
-        if not frames:
-            t += seconds
-            continue
-        seg = Segment(round(t, 2), round(e, 2), frames, "grid")
-        if yolo is not None:
-            mid = frames[len(frames) // 2]
-            bgr = cv2.cvtColor(np.array(mid), cv2.COLOR_RGB2BGR)
-            res = yolo(bgr, conf=0.4, classes=[PERSON_CLASS], verbose=False)[0]
-            seg.person_count = len(res.boxes)
-            if seg.person_count >= 1:                          # ── YOLO 보강 ──
-                seg.trigger = "yolo"
-                seg.frames = _seg_frames(cap, t, e, fps, frames_per_seg + 2)  # 더 촘촘히
-        segs.append(seg)
+        if frames:
+            segs.append(Segment(round(t, 2), round(e, 2), frames, "grid"))
         t += seconds
     cap.release()
-    print(f"[segmenter] {len(segs)} 구간 (grid {sum(s.trigger=='grid' for s in segs)} / "
-          f"yolo {sum(s.trigger=='yolo' for s in segs)}), {dur:.1f}s", flush=True)
+    print(f"[segmenter] {len(segs)} 구간 (그리드 {frames_per_seg}프레임/구간), {dur:.1f}s", flush=True)
     return segs

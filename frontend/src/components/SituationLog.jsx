@@ -3,7 +3,7 @@ import { listHistory, levelClass, eventLabel } from '../api'
 
 // 전체 CCTV에서 발생하는 상황을 실시간 표기하는 통합 이력(그리드 우측). 행마다 CAM 라벨.
 // 이상(고온) 상황을 위로, 클릭 시 해당 카메라 포커스 + 그 시각으로 이동.
-export default function SituationLog({ date, onSelect }) {
+export default function SituationLog({ date, maxSec = 86400, onSelect }) {
   const [segs, setSegs] = useState([])
 
   useEffect(() => {
@@ -13,9 +13,9 @@ export default function SituationLog({ date, onSelect }) {
     return () => clearInterval(id)
   }, [date])
 
-  // 영상 시간(구간 시작초) 내림차순 — 최신 시각이 위로(실시간 로그). 동시각은 카메라순.
-  const rows = [...segs].sort((a, b) =>
-    (b.start_s - a.start_s) || a.camera_id.localeCompare(b.camera_id))
+  // 오늘 현재시각 이후(미래) 이력 숨김 → 영상 시간 내림차순(최신 위로). 동시각은 카메라순.
+  const rows = segs.filter(s => s.abs_s == null || s.abs_s <= maxSec)
+    .sort((a, b) => (b.abs_s - a.abs_s) || a.camera_id.localeCompare(b.camera_id))
 
   return (
     <div className="card-box situ">
@@ -29,11 +29,11 @@ export default function SituationLog({ date, onSelect }) {
           return (
             <div key={key} className={`logrow ${s.is_alert ? 'alert ' + lc : ''}`}
                  onClick={() => onSelect && onSelect(s)} title={`${s.camera_id} ${s.ts} 보기`}>
-              <span className="logcam">{s.camera_id}</span>
-              <span className="logts">{s.ts}</span>
-              <span className="logcap">{s.caption}</span>
               <span className="logtag">{s.event_type && s.event_type !== 'normal'
                 ? <span className={`tag ${s.event_type}`}>{eventLabel(s.event_type)}</span> : null}</span>
+              <span className="logcam">{s.camera_id}</span>
+              <span className="logts">{s.ts}</span>
+              <span className="logcap" title={s.caption}>{s.caption}</span>
               <span className={`logtemp ${lc}`}>{s.is_alert ? `${s.temp.toFixed(1)}℃` : ''}</span>
             </div>
           )

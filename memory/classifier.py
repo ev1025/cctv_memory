@@ -43,9 +43,3 @@ class EventClassifier:
         c = self.classes[i]
         return {"event_type": c["key"], "label": c["label"],
                 "severity": int(c.get("severity", 0)), "score": round(sims[i], 3)}
-
-    def classify(self, caption):
-        """캡션 텍스트 → 클래스(텍스트를 즉석 임베딩)."""
-        if not caption or not caption.strip():
-            return {"event_type": "normal", "label": "정상", "severity": 0, "score": 0.0}
-        return self.classify_vec(self.emb.encode(caption))

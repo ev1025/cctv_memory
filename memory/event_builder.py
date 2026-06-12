@@ -35,10 +35,6 @@ class Event:
     seg_indices: list = field(default_factory=list)
     rep_seg: int = 0                   # 대표(썸네일) 구간 index
 
-    @property
-    def duration_s(self):
-        return round(self.end_s - self.start_s, 2)
-
 
 def _is_special(et):
     return et not in ("normal", "unknown")

@@ -128,7 +128,25 @@ class VectorStore:
                       key=lambda s: s["start_s"])
 
     def all_segments(self):
-        """전체 영상의 모든 사건(알림·이력 파생용)."""
+        """전체 영상의 모든 사건(사건 단위 묶음 — 알림·요약용)."""
         if self.col.count() == 0:
             return []
         return group_events(self._rows())
+
+    def raw_segments(self):
+        """모든 활동 '구간'(사건으로 안 묶음) — 이력을 구간 단위로 전부 노출.
+        검색도 구간 단위라, 검색 결과가 이력에 그대로 나타나게 하려고 사용."""
+        if self.col.count() == 0:
+            return []
+        out = []
+        for d, m in self._rows():
+            out.append({
+                "event_id": m.get("event_id"), "video_id": m.get("video_id"),
+                "start_s": m.get("start_s", 0), "end_s": m.get("end_s", 0),
+                "caption": d, "event_type": m.get("event_type") or "normal",
+                "severity": int(m.get("severity") or 0),
+                "person_count": m.get("person_count"), "dwell_s": m.get("dwell_s"),
+                "has_vehicle": m.get("has_vehicle"), "thumb": m.get("thumb"),
+                "indexed_at": m.get("indexed_at"),
+            })
+        return out

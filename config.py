@@ -1,11 +1,10 @@
-"""
-config.py — 3D Vision PoC 공통 설정 (Image→Text→Image 파이프라인)
+"""config.py — cctv_memory 공통 설정 (영상 행동 메모리: 추적·캡션·분류·검색).
 
-[매우 중요] 이 모듈은 *다른 어떤 모듈(torch/transformers/diffusers)보다 먼저* import 되어야 한다.
+[매우 중요] 이 모듈은 *다른 어떤 모듈(torch/transformers)보다 먼저* import 되어야 한다.
   사용할 GPU(CUDA_VISIBLE_DEVICES)와 HF 캐시 경로(HF_HOME)는 torch import 순간 고정되므로,
   torch import 이전에 os.environ 을 세팅해야 한다. → 모든 모듈의 첫 import 가 `import config`.
 
-  모델 목록(VLM/T2I 후보)은 models.py 에 분리돼 있다.
+  모델 목록(VLM/임베딩 후보)은 models.py 에 분리돼 있다.
 """
 import os
 
@@ -13,7 +12,6 @@ import os
 #    device_map="auto" 는 '보이는 GPU' 안에서만 분산하므로 0,1번은 건드리지 않는다.
 #    이후 'cuda:0' = 물리 2번, 'cuda:1' = 물리 3번.
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "2,3")
-VISIBLE = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
 
 # ── 2) HF 캐시 위치 — 홈 파티션 용량 절약 위해 대용량 디스크로 ────────────────
 _DATA2 = "/workspace/data2"
@@ -24,12 +22,11 @@ import torch  # 위 환경변수 세팅 이후 import
 
 # ── 3) 경로 ──────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ASSETS_DIR = os.path.join(BASE_DIR, "assets")     # 입력(테스트) 이미지
-OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")    # 생성 결과 이미지
-REPORT_DIR = os.path.join(OUTPUT_DIR, "reports")  # HTML 리포트 결과물 (outputs 하위 — reports/ 코드 폴더와 분리)
-SAMPLE_IMAGE = os.path.join(ASSETS_DIR, "sample_all3.png")  # 단일 실행(main.py) 기본 입력
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")     # 데이터(영상·임베딩 등)
+OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")    # 산출물(vmem: chroma·thumbs)
+SAMPLE_IMAGE = os.path.join(ASSETS_DIR, "sample.jpg")  # image_to_text 단독 실행 시 기본 입력(없으면 인자로 지정)
 
-# ── 4) 단일 실행(main.py) 기본 백엔드 (models.py 레지스트리 키) ───────────────
+# ── 4) 기본 VLM 백엔드 (models.py 레지스트리 키) ───────────────
 VLM_BACKEND = os.environ.get("VLM_BACKEND", "internvl3")
 
 # (i2t 분류 평가·도형 PoC·multi-image 프롬프트는 3d_vision 레포로 이동됨)
@@ -61,24 +58,13 @@ def build_quant_config():
 #    오프라인 mp4 를 구간별 캡션으로 색인(ChromaDB) → 자연어로 검색+답변.
 MEMORY_DIR = os.path.join(OUTPUT_DIR, "vmem")        # chroma/(인덱스) + thumbs/ — memory/ 코드 폴더와 이름 분리
 SEGMENT_SECONDS = float(os.environ.get("SEGMENT_SECONDS", "5"))   # 고정 그리드 윈도우(초)
-SEGMENT_FRAMES = int(os.environ.get("SEGMENT_FRAMES", "3"))        # 구간당 VLM 입력 프레임 수 (많을수록 동작 인식↑, hailo 교훈)
+SEGMENT_FRAMES = int(os.environ.get("SEGMENT_FRAMES", "16"))       # 구간당 VLM 입력 프레임 수 (기본=권장 16, 로컬 8GB만 env로 낮춤)
 CHROMA_SUBDIR = os.environ.get("CHROMA_SUBDIR", "chroma")          # 모델 병렬 비교 시 모델별 별도 chroma
 THUMBS_SUBDIR = os.environ.get("THUMBS_SUBDIR", "thumbs")          # 〃 모델별 별도 thumbs
 EMBED_BACKEND = os.environ.get("EMBED_BACKEND", "bge-m3")         # models.EMBED_REGISTRY 키
-# 전 구간 무조건 임베딩 X — VLM 이 '특이사항(위험/이상)'으로 판단한 구간만 임베딩(정상 구간 제외).
-EMBED_NOTABLE_ONLY = os.environ.get("EMBED_NOTABLE_ONLY", "1") == "1"
 # 검색 최소 유사도 — 이 미만은 '무관'으로 보고 결과에서 제외(무의미 질의가 top-k 로 안 뜨게).
 SEARCH_MIN_SCORE = float(os.environ.get("SEARCH_MIN_SCORE", "0.52"))
 
-# 구간 색인용 '통합' 분석 프롬프트 — 1회 추론으로 캡션+라벨을 함께. memory.video_memory.parse_risk 가 파싱.
-SEGMENT_RISK_PROMPT = (
-    "다음 연속 프레임(같은 구간, 시간순)을 분석해 정확히 아래 4줄 형식으로만 답하세요.\n"
-    "번호(1.), 마크다운(*, #), 영어 문장을 절대 쓰지 말고 반드시 한국어로 답하세요.\n\n"
-    "설명: 장면에서 무슨 일이 일어나는지 한국어 한 문장\n"
-    "위험: 있음 또는 없음\n"
-    "유형: fire, smoke, fall, machine, none 중 영어 한 단어\n"
-    "심각도: 0, 1, 2, 3 중 숫자 하나"
-)
 # RAG 답변 프롬프트 — 검색된 구간(시각+캡션) + 대표 프레임을 근거로 답변. .format(question=, context=)
 RAG_ANSWER_PROMPT = (
     "질문: {question}\n\n"
@@ -87,12 +73,10 @@ RAG_ANSWER_PROMPT = (
     "답변에는 근거가 된 시각을 [MM:SS] 형식으로 인용하세요."
 )
 
-# ── 8) 행동 이벤트 메모리 (주차장 CCTV 행동/특이사항 이력) ─────────────────────
-#    화재 위험 렌즈(SEGMENT_RISK_PROMPT)를 '사람 행동/이벤트' 렌즈로 확장.
+# ── 행동 이벤트 메모리 (주차장 CCTV 행동/특이사항 이력) ───────────────────────
+#    화재 감지가 아니라 '사람 행동/이벤트' 렌즈로 구간을 분석한다(화재는 별도 열화상 담당).
 #    역할 분담: VLM 은 '눈에 보이는 행동/사건'을 분류, 시간 기반 이벤트(배회)는 tracker 의 dwell_s 로 판정.
 #    관제 기준 = 활동(activity) 있으면 다 기록, 정적 배경만 임베딩 제외. 위험은 그중 severity/유형으로 알림.
-EVENT_TYPES = ("fall", "vehicle_interaction", "smoking", "flammable", "normal", "unknown")  # VLM 이 부여
-EVENT_TYPES_ALL = EVENT_TYPES + ("loitering",)   # loitering 은 tracker(체류시간)에서 부여
 
 # 배회 판정 — tracker dwell_s 임계(초) + 이동범위(px) 이하면 '머무름'. (실주차장은 60~120s 권장)
 LOITER_DWELL_S = float(os.environ.get("LOITER_DWELL_S", "30"))
@@ -100,39 +84,25 @@ LOITER_MAX_MOVE_PX = float(os.environ.get("LOITER_MAX_MOVE_PX", "250"))
 # 사건 병합 — 연속 구간 간 최대 공백(초). 이 이하로 떨어진 같은 유형/track 구간을 한 사건으로 묶음.
 EVENT_MERGE_GAP_S = float(os.environ.get("EVENT_MERGE_GAP_S", str(SEGMENT_SECONDS * 1.5)))
 
-# 구간 행동 분석 프롬프트 — 1회 추론으로 캡션+활동+이벤트유형을 JSON 으로. memory.video_memory.parse_event 가 파싱.
+# 구간 묘사 프롬프트 — 캡션(묘사)만 생성. 활동 게이트는 tracker, 유형은 임베딩 분류기가 별도로.
+#   체크리스트 누수 방지: 상황을 '예시'로만 녹이고, '없는 것 나열(부정 echo)'을 명시적으로 금지.
 SEGMENT_EVENT_PROMPT = (
-    "<role>CCTV 영상을 관찰해 사건을 사실대로 기록하는 관제 AI.</role>\n"
-    "<task>아래 연속 프레임(같은 구간, 시간순)에서 일어나는 상황을 객관적 사실로 한국어로 묘사하라.\n"
-    "다음 행동이 보이는지 특히 주의 깊게 관찰하라:\n"
-    "- 사람 간 물리적 충돌·격렬한 움직임 (밀치기·때리기·붙잡기·몸싸움)\n"
-    "- 바닥에 갑자기 넘어지거나 쓰러져 누운 사람\n"
-    "- 울타리·담을 넘는 무단 진입, 또는 한곳에 비정상적으로 오래 머무름\n"
-    "- 좁은 공간에 비정상적으로 밀집해 모인 다수의 사람\n"
-    "- 도로·골목·바닥이 물에 잠긴 침수\n"
-    "위에 해당하는 행동이 보이면 반드시 caption '첫 문장'에 그것을 먼저 명시하라. "
-    "해당 없으면 평범한 상황으로 묘사하라.</task>\n"
-    "<rules>1. 화면에 실제로 보이는 사실만. 추측·과장 금지, 조명 반사·그림자를 임의 해석 말 것.\n"
-    "2. 유형 라벨(분류)은 하지 말 것 — 묘사만 (분류는 별도 단계).\n"
-    "3. 코드블록·여분 텍스트 없이 순수 JSON 객체 단 하나만 출력.</rules>\n"
-    "<output_format>\n"
-    "{\n"
-    '  "caption": "(특이행동이 있으면 첫 문장에 먼저 명시) 장면을 한국어 1~2문장으로 구체적으로",\n'
-    '  "activity": true              // 사람이나 움직임이 있으면 true, 아무도 없는 정적 배경이면 false\n'
-    "}\n"
-    "</output_format>"
+    "다음 연속 프레임은 같은 5초 구간을 시간순으로 본 것입니다. "
+    "이 구간에서 사람과 사물이 실제로 무엇을 하는지 객관적 사실로 한국어로 묘사하세요.\n"
+    "기호 없이 순수한 텍스트로 아래 한 줄 형식만 작성하세요.\n\n"
+    "사람의 구체적 행동(밀치거나 다투기, 넘어져 쓰러지기, 담을 넘거나 한곳에 오래 머무르기, "
+    "좁은 곳에 밀집하기)이나 바닥 침수가 보이면 그것을 캡션 맨 앞에 먼저 적으세요. "
+    "보이지 않는 상황을 '없음'이라고 나열하지 말고, 화면에 실제로 보이는 것만 묘사하세요.\n\n"
+    "캡션: 장면을 1~2문장으로 구체적으로"
 )
 
 # (비교용) 유형 분류까지 시키는 프롬프트 — 중립 묘사형(SEGMENT_EVENT_PROMPT) 대비 '묘사 차이' 확인용.
 #   scripts/compare_prompts.py 가 같은 구간에 둘을 돌려, 분류를 시키면 묘사가 어떻게 달라지는지 보여준다.
 SEGMENT_CLASSIFY_PROMPT = (
-    "<role>CCTV 영상을 관찰하는 관제 AI.</role>\n"
-    "<task>아래 연속 프레임(같은 구간, 시간순)을 보고 장면을 한국어로 묘사하고, 유형을 분류하라.</task>\n"
-    "<rules>코드블록·여분 텍스트 없이 순수 JSON 객체 하나만 출력.</rules>\n"
-    "<output_format>\n"
-    "{\n"
-    '  "caption": "장면에서 무슨 일이 일어나는지 한국어 1~2문장",\n'
-    '  "event_type": "falldown | fight | invasion | gathering | crowd | flood | normal"\n'
-    "}\n"
-    "</output_format>"
+    "다음 연속 프레임은 같은 5초 구간을 시간순으로 본 것입니다. "
+    "이 구간에서 사람과 사물이 실제로 무엇을 하는지 객관적 사실로 한국어로 묘사하고, 상황 유형을 분류하세요.\n"
+    "기호 없이 순수한 텍스트로 아래 두 줄 형식만 작성하세요.\n\n"
+    "보이지 않는 상황을 '없음'이라고 나열하지 말고, 화면에 실제로 보이는 것만 묘사하세요.\n\n"
+    "캡션: 장면을 1~2문장으로 구체적으로\n"
+    "유형: falldown / fight / invasion / gathering / crowd / flood / normal 중 하나"
 )

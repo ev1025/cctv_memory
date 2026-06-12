@@ -188,19 +188,95 @@ button { font-family: inherit; }
 .log-cam { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--blue);
   background: rgba(91,157,255,.1); padding: 3px 10px; border-radius: 6px; }
 .loglist { max-height: calc(100vh - 235px); overflow-y: auto; }
-.logrow { display: flex; align-items: center; gap: 12px; padding: 11px 14px; cursor: pointer;
+/* 포커스 우측: 검색결과는 자체 스크롤(상한), 특이사항은 남은 공간 채워 자체 스크롤 → 서로 안 밀림 */
+.focusview .col:last-child .searchbox { flex-shrink: 0; max-height: 46%; overflow-y: auto; }
+.focusview .col:last-child > .card-box:last-child { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.focusview .col:last-child > .card-box:last-child .loglist { max-height: none; flex: 1; min-height: 0; }
+.logrow { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer;
   border-left: 2px solid transparent; border-bottom: 1px solid rgba(42,46,58,.5); }
 .logrow:hover { background: rgba(255,255,255,.025); }
-.logrow.on { background: rgba(91,157,255,.08); }
+.logrow.on { background: rgba(91,157,255,.16); border-left-color: var(--blue); }   /* 현재 보는 이력 강조 */
 .logrow.alert.crit { border-left-color: var(--red); }
 .logrow.alert.warn { border-left-color: var(--amber); }
 .logts { font-family: var(--mono); font-size: 12px; color: var(--mut); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.logcap { font-size: 13px; color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.logtag { width: 76px; flex-shrink: 0; display: flex; align-items: center; }
+.logcap { font-size: 13px; color: var(--fg); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.logtag { flex: 0 0 60px; width: 60px; min-width: 60px; box-sizing: border-box; overflow: hidden;
+  display: flex; align-items: center; }   /* 정확히 60px 고정 → 태그 유무 무관 시간열 정렬 */
+/* 실시간 상황(situ): 캡션 1줄 + …축소 (특이사항은 전체 표시 유지) */
+.situ-list .logrow { align-items: center; }
+.situ-list .logcap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; line-height: 1.3; }
+/* 개별영상 특이사항(이력): 내용 전체 표시 — …로 안 줄임 (그리드 실시간상황만 1줄) */
+.loglist:not(.situ-list) .logrow { align-items: flex-start; }
+.loglist:not(.situ-list) .logts, .loglist:not(.situ-list) .logtag { padding-top: 1px; }
+.loglist:not(.situ-list) .logcap { white-space: normal; overflow: visible; text-overflow: clip; word-break: break-word; line-height: 1.45; }
 .logtemp { font-family: var(--mono); font-size: 12px; font-weight: 700; flex-shrink: 0;
   width: 54px; text-align: right; font-variant-numeric: tabular-nums; color: var(--mut); }
 .logtemp.crit { color: var(--red); }
 .logtemp.warn { color: var(--amber); }
+
+/* ── 24h 플레이리스트 플레이어 + 스크러버 ── */
+.player-col { display: flex; flex-direction: column; min-height: 0; }
+.focus-feed { position: relative; flex: 1; min-height: 0; display: flex; }   /* 포커스 영상 + 캠 라벨 오버레이 */
+.focus-feed .cam-cell-label { top: 12px; left: 12px; font-size: 14px; padding: 4px 11px; }
+.feed-wrap { position: relative; flex: 1; min-height: 0; display: flex; background: #000; border-radius: 10px; overflow: hidden; }
+.feed { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.feed.thermal { filter: saturate(0) sepia(1) hue-rotate(150deg) contrast(1.25); }
+.nosignal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: var(--mut); font-size: 14px; letter-spacing: .02em; background: rgba(0,0,0,.55); }
+.cam-cell .feed-wrap.mini { position: absolute; inset: 0; border-radius: 0; }
+.cam-cell .feed-wrap.mini .feed { object-fit: cover; }
+.cam-cell .feed-wrap.mini .nosignal { font-size: 12px; }
+.scrubber { display: flex; align-items: center; gap: 14px; padding: 12px 4px 2px; }
+.sc-track { position: relative; flex: 1; height: 22px; display: flex; align-items: center; }
+.sc-range { width: 100%; accent-color: var(--blue); cursor: pointer; }
+.sc-time { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--blue); width: 82px; text-align: center;
+           background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.sc-time:focus { outline: none; border-color: var(--blue); }
+/* 시간 입력창 왼쪽: LIVE 깜빡 ↔ 실시간 버튼 (같은 자리 교체, 폭 맞춰 흔들림 방지) */
+.sc-live, .sc-golive { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+           flex: 0 0 auto; min-width: 66px; height: 28px; box-sizing: border-box; }
+.sc-live { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--red); }
+.sc-live .b { width: 7px; height: 7px; border-radius: 50%; background: var(--red);
+              box-shadow: 0 0 6px var(--red); animation: liveblink 1.1s ease-in-out infinite; }
+.sc-golive { font-size: 12px; font-weight: 600; color: var(--amber); cursor: pointer;
+             background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.32); border-radius: 7px; }
+.sc-golive:hover { background: rgba(245,158,11,.18); }
+.sc-golive .b { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+/* 미래(아직 녹화 전) 구간 잠금 표시 */
+.sc-future { position: absolute; top: 0; bottom: 0; right: 0; border-radius: 0 4px 4px 0; pointer-events: none;
+             background: repeating-linear-gradient(45deg, rgba(255,255,255,.05) 0 5px, transparent 5px 10px); }
+.sc-future::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+                     width: 1px; height: 14px; background: var(--mut); }
+/* 재생바 호버 시각 툴팁 */
+.sc-hovertip { position: absolute; bottom: calc(100% + 6px); transform: translateX(-50%); pointer-events: none; z-index: 6;
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: #fff; white-space: nowrap;
+  background: rgba(15,18,28,.95); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+.sc-hovertip::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 4px solid transparent; border-top-color: rgba(15,18,28,.95); }
+.sc-hovertip.future { color: var(--mut); }
+/* 재생 컨트롤 바 (NVR풍) */
+.pcontrols { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 6px 8px 12px; position: relative; }
+.pc-btn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 32px;
+          color: var(--mut); background: transparent; border: 1px solid var(--line); border-radius: 7px;
+          cursor: pointer; transition: color .12s, background .12s, border-color .12s; }
+.pc-btn:hover { color: var(--fg); background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.18); }
+.pc-btn:disabled { opacity: .3; cursor: default; }
+.pc-btn:disabled:hover { color: var(--mut); background: transparent; border-color: var(--line); }
+.pc-main { width: 48px; color: var(--fg); }
+.pc-main:hover { color: var(--blue); border-color: var(--blue); }
+.pc-live { position: absolute; right: 8px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+           font-weight: 600; color: var(--amber); background: rgba(245,158,11,.1);
+           border: 1px solid rgba(245,158,11,.32); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+.pc-live:hover { background: rgba(245,158,11,.18); }
+.pc-live .lvd { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+.pc-livedot { position: absolute; left: 10px; display: inline-flex; align-items: center; gap: 6px;
+              font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--red); }
+.pc-livedot .b { width: 7px; height: 7px; border-radius: 50%; background: var(--red);
+                 box-shadow: 0 0 6px var(--red); animation: liveblink 1.1s ease-in-out infinite; }
+@keyframes liveblink { 0%, 100% { opacity: 1 } 50% { opacity: .2 } }
+.sc-mk { position: absolute; top: 3px; width: 2px; height: 7px; background: var(--mut); border-radius: 1px; pointer-events: none; }
+.sc-mk.crit { background: var(--red); }
+.sc-mk.warn { background: var(--amber); }
 
 /* ── 카드 공통 ── */
 .card-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -268,12 +344,12 @@ button { font-family: inherit; }
 
 /* ── 알림 피드 (좌/이력) ── */
 .alertfeed { max-height: 70vh; overflow-y: auto; padding: 4px 6px 8px; }
-.alert { display: flex; gap: 10px; padding: 9px 9px; border-radius: 8px; cursor: pointer;
+.alertfeed .alert { display: flex; gap: 10px; padding: 9px 9px; border-radius: 8px; cursor: pointer;
   border: 1px solid transparent; border-left: 3px solid var(--line2); margin-bottom: 5px; transition: background .15s; }
-.alert:hover { background: rgba(91,157,255,.07); }
-.alert.on { background: rgba(91,157,255,.12); border-color: var(--blue); }
-.alert.crit { border-left-color: var(--red); }
-.alert.warn { border-left-color: var(--amber); }
+.alertfeed .alert:hover { background: rgba(91,157,255,.07); }
+.alertfeed .alert.on { background: rgba(91,157,255,.12); border-color: var(--blue); }
+.alertfeed .alert.crit { border-left-color: var(--red); }
+.alertfeed .alert.warn { border-left-color: var(--amber); }
 .alert .thumb { width: 74px; height: 42px; object-fit: cover; border-radius: 5px; background: #000; flex-shrink: 0; }
 .alert .info { min-width: 0; flex: 1; }
 .alert .a-top { display: flex; align-items: center; gap: 7px; }
@@ -341,8 +417,9 @@ button { font-family: inherit; }
 .scard { display: flex; gap: 10px; background: var(--panel2); border: 1px solid var(--line);
   border-radius: 8px; padding: 9px; margin: 0 10px 8px; cursor: pointer; transition: border-color .15s; }
 .scard:hover { border-color: var(--blue); }
+.scard.on { border-color: var(--blue); background: rgba(91,157,255,.12); box-shadow: 0 0 0 1px var(--blue) inset; }
 .scard img { width: 96px; height: 54px; object-fit: cover; border-radius: 5px; background: #000; flex-shrink: 0; }
-.scard .ts { color: var(--blue); font-weight: 700; font-family: var(--mono); font-size: 12px; }
+.scard .ts { color: var(--blue); font-weight: 700; font-family: var(--mono); font-size: 12px; margin-right: 9px; }
 .scard .score { color: var(--mut); font-size: 11px; margin-left: 6px; font-family: var(--mono); }
 .scard .cap { color: var(--fg); margin-top: 4px; font-size: 12px; }
 

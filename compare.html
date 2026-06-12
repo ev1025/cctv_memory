@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VLM 캡션 비교 — 16프레임 색인</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#121722; --panel2:#0f131c; --line:#222838; --fg:#e6e9f0; --mut:#8b93a7;
+          --blue:#5b9dff; --red:#ff5a5a; --amber:#f59e0b; --mono:ui-monospace,Menlo,Consolas,monospace; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,'Segoe UI',sans-serif; height:100vh; overflow:hidden; }
+  .top { height:48px; display:flex; align-items:center; gap:12px; padding:0 18px; border-bottom:1px solid var(--line); }
+  .top b { font-size:15px; } .top span { color:var(--mut); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:220px 1fr; height:calc(100vh - 48px); }
+  .clips { border-right:1px solid var(--line); overflow-y:auto; padding:8px; }
+  .clip { padding:9px 11px; border-radius:8px; cursor:pointer; font-size:13px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .clip:hover { background:rgba(255,255,255,.04); }
+  .clip.on { background:rgba(91,157,255,.16); }
+  .clip .gt { font-size:11px; color:var(--mut); flex-shrink:0; }
+  .main { overflow-y:auto; padding:16px 20px; }
+  .vidrow { display:grid; grid-template-columns:minmax(360px,1.1fr) 1fr; gap:18px; align-items:start; }
+  video { width:100%; background:#000; border-radius:10px; border:1px solid var(--line); }
+  .now { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .now h3 { margin:0 0 4px; font-size:13px; color:var(--mut); font-weight:600; }
+  .now .clk { font-family:var(--mono); color:var(--blue); font-weight:700; font-size:18px; }
+  .now .gtbig { font-size:12px; color:var(--mut); margin-left:8px; }
+  .mcap { margin-top:11px; padding-top:11px; border-top:1px solid var(--line); }
+  .mcap .mh { display:flex; align-items:center; gap:8px; margin-bottom:3px; }
+  .mcap .mname { font-size:12px; font-weight:700; }
+  .tag { font-size:10.5px; font-weight:700; padding:1px 8px; border-radius:10px; }
+  .tag.normal,.tag.unknown { background:rgba(139,147,167,.16); color:var(--mut); }
+  .tag.fight,.tag.flood,.tag.crowd,.tag.gathering,.tag.invasion,.tag.falldown { background:rgba(245,158,11,.16); color:var(--amber); }
+  .mcap .mtext { font-size:13px; line-height:1.5; color:var(--fg); }
+  .mcap.empty .mtext { color:var(--mut); }
+  h4.tbl { margin:20px 0 8px; font-size:13px; color:var(--mut); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:600; position:sticky; top:0; background:var(--bg); }
+  td.t { font-family:var(--mono); color:var(--blue); white-space:nowrap; font-weight:700; }
+  tr.row { cursor:pointer; } tr.row:hover td { background:rgba(255,255,255,.03); }
+  tr.row.on td { background:rgba(91,157,255,.12); }
+  .ttag { font-size:10px; font-weight:700; color:var(--mut); }
+  .ttag.sp { color:var(--amber); }
+  .hint { color:var(--mut); padding:40px; text-align:center; }
+  .bench { margin-bottom:16px; border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; }
+  .bhd { padding:10px 14px; font-size:13px; font-weight:700; cursor:pointer; background:rgba(91,157,255,.10);
+         display:flex; justify-content:space-between; align-items:center; }
+  .bench.collapsed .bbody { display:none; } .bench.collapsed .caret { transform:rotate(-90deg); }
+  .caret { color:var(--mut); transition:transform .15s; }
+  .bbody { padding:12px 14px; display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start; }
+  .btab { border-collapse:collapse; font-size:12.5px; }
+  .btab th,.btab td { padding:5px 12px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  .btab th { color:var(--mut); font-weight:600; }
+  .btab tr.best td { background:rgba(91,157,255,.14); }
+  .btab b { color:var(--blue); }
+  .bnote { font-size:11px; color:var(--mut); width:100%; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div class="top"><b>VLM 캡션 비교</b><span>16프레임 · 로컬 줄형식 프롬프트 · 원문 그대로</span></div>
+  <div class="wrap">
+    <div class="clips" id="clips"></div>
+    <div class="main" id="main">
+      <div class="bench" id="bench"></div>
+      <div id="clipview"><div class="hint">왼쪽에서 클립을 선택하세요</div></div>
+    </div>
+  </div>
+<script>
+let DATA=null, MODELS=[], cur=null;
+const $=(s,el=document)=>el.querySelector(s);
+const fmt=s=>{s=Math.floor(s);return `${String(s/60|0).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`};
+
+fetch('/compare-data').then(r=>r.json()).then(j=>{
+  DATA=j; MODELS=j.models;
+  const cl=$('#clips');
+  j.clips.forEach((c,i)=>{
+    const d=document.createElement('div'); d.className='clip'; d.dataset.i=i;
+    d.innerHTML=`<span>${c.video_id}</span><span class="gt">${c.gt}</span>`;
+    d.onclick=()=>select(i); cl.appendChild(d);
+  });
+  if(j.clips.length) select(0);
+});
+
+function select(i){
+  cur=DATA.clips[i];
+  document.querySelectorAll('.clip').forEach(e=>e.classList.toggle('on',+e.dataset.i===i));
+  const m=$('#clipview');
+  m.innerHTML=`
+    <div class="vidrow">
+      <video id="vid" controls autoplay muted playsinline src="/video/${encodeURIComponent(cur.video_id)}"></video>
+      <div class="now" id="now"></div>
+    </div>
+    <h4 class="tbl">구간별 캡션 (행 클릭 → 해당 시각으로 이동)</h4>
+    <table><thead><tr><th>시각</th>${MODELS.map(mm=>`<th>${mm.label}</th>`).join('')}</tr></thead>
+    <tbody id="tb"></tbody></table>`;
+  const tb=$('#tb');
+  cur.segments.forEach(s=>{
+    const tr=document.createElement('tr'); tr.className='row'; tr.dataset.start=s.start_s;
+    tr.innerHTML=`<td class="t">${fmt(s.start_s)}</td>`+MODELS.map(mm=>{
+      const x=s[mm.key]; if(!x) return '<td>—</td>';
+      const sp=(x.type&&x.type!=='normal'&&x.type!=='unknown')?'sp':'';
+      return `<td><span class="ttag ${sp}">[${x.type||'-'}]</span> ${esc(x.cap)}</td>`;
+    }).join('');
+    tr.onclick=()=>{ $('#vid').currentTime=s.start_s; };
+    tb.appendChild(tr);
+  });
+  const v=$('#vid');
+  v.ontimeupdate=()=>renderNow(v.currentTime);
+  renderNow(0);
+}
+
+function renderNow(t){
+  if(!cur) return;
+  const seg=cur.segments.find(s=>t>=s.start_s && t<s.end_s) || cur.segments[0];
+  $('#now').innerHTML=`<h3>현재 구간</h3>
+    <div><span class="clk">${fmt(seg.start_s)}–${fmt(seg.end_s)}</span><span class="gtbig">실제 라벨: ${cur.gt}</span></div>`+
+    MODELS.map(mm=>{ const x=seg[mm.key];
+      const sp=(x&&x.type&&x.type!=='normal'&&x.type!=='unknown')?'':'normal';
+      return `<div class="mcap ${x?'':'empty'}"><div class="mh"><span class="mname">${mm.label}</span>`+
+        `<span class="tag ${x?x.type:'normal'}">${x?x.type:'-'}</span></div>`+
+        `<div class="mtext">${x?esc(x.cap):'—'}</div></div>`;
+    }).join('');
+  document.querySelectorAll('tr.row').forEach(tr=>tr.classList.toggle('on',+tr.dataset.start===seg.start_s));
+}
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// 벤치마크 정량 결과 (bench16, AI-Hub 19클립, 16프레임, A=VLM직접분류 / B=임베딩 오픈셋 / GT=실제라벨)
+const EVAL = {
+  clips: 19,
+  models: [
+    {name:'Qwen3-VL-8B',  A:'4/19 (21%)', B:'10/19 (53%)', best:true},
+    {name:'InternVL3-8B', A:'5/19 (26%)', B:'7/19 (37%)'},
+    {name:'Qwen2.5-VL-7B',A:'4/19 (21%)', B:'2/19 (11%)'},
+  ],
+  cats: [
+    {cat:'flood 침수',     n:7, q3:5, iv:2, q25:1},
+    {cat:'crowd 인파밀집',  n:4, q3:4, iv:3, q25:0},
+    {cat:'gathering 군집',  n:2, q3:1, iv:0, q25:0},
+    {cat:'fight 싸움',      n:2, q3:0, iv:2, q25:1},
+    {cat:'falldown 낙상',   n:2, q3:0, iv:0, q25:0},
+    {cat:'invasion 침입',   n:2, q3:0, iv:0, q25:0},
+  ],
+};
+function renderBench(){
+  const e=EVAL;
+  document.getElementById('bench').innerHTML=
+    `<div class="bhd" onclick="this.parentElement.classList.toggle('collapsed')">📊 벤치마크 결과 — AI-Hub ${e.clips}클립 · 16프레임 <span class="caret">▾</span></div>`+
+    `<div class="bbody">`+
+      `<table class="btab"><thead><tr><th>모델</th><th>A · VLM 직접분류</th><th>B · 임베딩 오픈셋</th></tr></thead><tbody>`+
+        e.models.map(m=>`<tr class="${m.best?'best':''}"><td>${m.name}${m.best?' ★':''}</td><td>${m.A}</td><td><b>${m.B}</b></td></tr>`).join('')+
+      `</tbody></table>`+
+      `<table class="btab"><thead><tr><th>카테고리</th><th>n</th><th>Qwen3-VL</th><th>InternVL3</th><th>Qwen2.5-VL</th></tr></thead><tbody>`+
+        e.cats.map(c=>`<tr><td>${c.cat}</td><td>${c.n}</td><td><b>${c.q3}</b></td><td>${c.iv}</td><td>${c.q25}</td></tr>`).join('')+
+      `</tbody></table>`+
+      `<div class="bnote">A=클립을 한 번에 보고 유형 직접분류(짧은 사건 묻힘) · B=5초 구간 캡션을 임베딩으로 분류. 전 모델 B&gt;A, Qwen3-VL이 B 53%로 최고. falldown·invasion은 전 모델 0(난이도+라벨 품질).</div>`+
+    `</div>`;
+}
+renderBench();
+</script>
+</body>
+</html>

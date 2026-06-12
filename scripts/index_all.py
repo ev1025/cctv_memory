@@ -15,7 +15,7 @@ SRC = os.path.join(config.ASSETS_DIR, "embedding")
 VID = os.path.join(config.MEMORY_DIR, "videos")
 os.makedirs(VID, exist_ok=True)
 
-# 전체 7개 재색인(parse_risk 강건화 반영). chroma 는 실행 전 비워 깨끗이 재생성. 없는 파일은 건너뜀.
+# 전체 7개 재색인. chroma 는 실행 전 비워 깨끗이 재생성. 없는 파일은 건너뜀.
 TODO = ["fire6", "machine_tipover2", "machine_tipover3", "people-detection",
         "person-bicycle-car-detection", "person_fall3", "person_fall4"]
 

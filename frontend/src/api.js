@@ -5,24 +5,6 @@ export async function listCameras() {
   catch { return { cameras: [], dates: [] } }
 }
 
-export async function listAlerts(date, cams) {
-  const qs = new URLSearchParams()
-  if (date) qs.set('date', date)
-  if (cams && cams.length) qs.set('cams', cams.join(','))
-  try { const r = await fetch('/alerts?' + qs.toString()); return await r.json() }
-  catch { return { alerts: [] } }
-}
-
-export async function listVideos() {
-  try { const r = await fetch('/videos'); return await r.json() } catch { return { videos: [] } }
-}
-
-export async function getSegments(videoId) {
-  const r = await fetch('/segments?video_id=' + encodeURIComponent(videoId))
-  if (!r.ok) throw new Error('구간 로드 실패')
-  return r.json()
-}
-
 export async function listHistory(date, cams) {
   const qs = new URLSearchParams()
   if (date) qs.set('date', date)
@@ -31,10 +13,11 @@ export async function listHistory(date, cams) {
   catch { return { segments: [] } }
 }
 
-export async function queryVideo(question, specialOnly) {
+export async function queryVideo(question, specialOnly, cam) {
   const fd = new FormData()
   fd.append('question', question)
   fd.append('special_only', specialOnly)
+  if (cam) fd.append('camera', cam)
   const r = await fetch('/query', { method: 'POST', body: fd })
   if (!r.ok) throw new Error('검색 실패 (' + r.status + ')')
   return r.json()

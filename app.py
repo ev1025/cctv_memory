@@ -11,7 +11,6 @@ app.py — FastAPI: Image→Text 감시 API
 """
 import config  # ★ torch 보다 먼저 (GPU 격리/HF 캐시)
 
-import io
 import os
 import threading
 
@@ -155,13 +154,33 @@ def serve_video(video_id: str, type: str = "normal"):
 
 @app.get("/thumb")
 def serve_thumb(path: str):
-    # 저장된 절대경로가 옛 위치(예: 3d_vision)를 가리켜도 현재 MEMORY_DIR/thumbs 로 재매핑.
+    # 저장된 절대경로(다른 서버/옛 위치/모델별 thumbs_xxx)를 현재 MEMORY_DIR 하위로 재매핑.
     p = path.replace("\\", "/")
-    cand = os.path.join(config.MEMORY_DIR, "thumbs", p.split("thumbs/", 1)[1]) if "thumbs/" in p else path
+    if "/vmem/" in p:                                               # 서버 절대경로 → 로컬 vmem (thumbs_internvl3 등 포함)
+        cand = os.path.join(config.MEMORY_DIR, p.split("/vmem/", 1)[1])
+    elif "thumbs/" in p:
+        cand = os.path.join(config.MEMORY_DIR, "thumbs", p.split("thumbs/", 1)[1])
+    else:
+        cand = path
     rp = os.path.abspath(cand)              # MEMORY_DIR 하위만 허용(경로 탈출 방지)
     if not rp.startswith(os.path.abspath(config.MEMORY_DIR)) or not os.path.exists(rp):
         raise HTTPException(404, "thumb not found")
     return FileResponse(rp)
+
+
+@app.get("/compare")
+def compare_page():
+    """VLM 캡션 비교 페이지(영상 + 3모델 구간별 캡션). 16프레임 색인 결과 검토용."""
+    return FileResponse(os.path.join(config.BASE_DIR, "compare.html"),
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/compare-data")
+def compare_data():
+    p = os.path.join(config.MEMORY_DIR, "captions_f16.json")
+    if not os.path.exists(p):
+        raise HTTPException(404, "captions_f16.json 없음 — dump_captions_json.py 먼저 실행")
+    return FileResponse(p)
 
 
 @app.get("/memory-status")
@@ -207,7 +226,7 @@ def history_ep(date: str = None, cams: str = None):
     """전체 구간 이력(평소 보는 단일 타임라인). 고온 구간은 is_alert=True 로 마킹."""
     import cctv_meta
     cam_set = {c.strip() for c in cams.split(",") if c.strip()} if cams else None
-    return {"segments": cctv_meta.build_history(_store().all_segments(), date=date or None, cams=cam_set)}
+    return {"segments": cctv_meta.build_history(_store().raw_segments(), date=date or None, cams=cam_set)}
 
 
 @app.get("/segments")
@@ -241,7 +260,7 @@ def index_video_ep(file: UploadFile = File(...),
 @app.post("/query")
 def query_ep(question: str = Form(...), k: int = Form(5),
              special_only: bool = Form(False), event_type: str = Form(None),
-             backend: str = Form(None)):
+             camera: str = Form(None), backend: str = Form(None)):
     """자연어 질문 → 벡터검색(retrieval-only, 빠름). 반환: {segments[]} (사건에 카메라/온도 부착).
 
     special_only=True → 특이사건(severity≥1)만. event_type 지정 시 해당 유형만(예: fall, loitering).
@@ -255,10 +274,38 @@ def query_ep(question: str = Form(...), k: int = Form(5),
     elif special_only:
         where = {"severity": {"$gte": 1}}
     out = video_memory.query(question, k=k, where=where, answer=False)   # VLM 생략 → 빠름
+    seen, deduped = set(), []
     for s in out.get("segments", []):
-        s["camera_id"] = cctv_meta.video_meta(s.get("video_id")).get("camera_id")
+        vid = s.get("video_id")
+        key = s.get("event_id") or f"{vid}:{int(s.get('start_s') or 0)}"
+        if key in seen:                                  # 같은 사건 1회만(클립이 여러 카메라에 펼쳐져도)
+            continue
+        seen.add(key)
+        if camera:                                        # 포커스: 그 카메라 배치로 한정
+            off = next((o for c, o in cctv_meta._clip_index().get(vid, []) if c == camera), None)
+            if off is None:
+                continue                                  # 그 카메라에 없는 사건 제외
+            s["camera_id"] = camera
+            s["abs_s"] = int(off + (s.get("start_s") or 0))
+        else:                                             # 그리드: 대표 카메라 1개 귀속
+            place = cctv_meta.primary_placement(vid)
+            if place:
+                s["camera_id"] = place[0]
+                s["abs_s"] = int(place[1] + (s.get("start_s") or 0))
+            else:
+                s["camera_id"] = cctv_meta.video_meta(vid).get("camera_id")
         s["temp"], s["level"] = cctv_meta.seg_temp(s)
+        deduped.append(s)
+    out["segments"] = deduped
     return out
+
+
+@app.get("/timeline")
+def timeline_ep():
+    """9카메라 24h 플레이리스트(시각→클립 표). 프론트 PlaylistPlayer 가 사용."""
+    import cctv_meta
+    tl = cctv_meta._timeline() or {}
+    return {"day_seconds": tl.get("day_seconds", 86400), "cameras": tl.get("cameras", [])}
 
 
 if __name__ == "__main__":

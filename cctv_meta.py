@@ -57,6 +57,59 @@ def abs_clock(video_id, start_s):
     return base + timedelta(seconds=float(start_s or 0)) if base else None
 
 
+# ── [타임라인] 9카메라 24h 플레이리스트 (cctv_timeline.json) ──────────────────────
+#   클립을 카메라별로 하루(86400s) 시각에 배치한 표. 없으면 위 recorded_at 경로로 폴백(무중단).
+DAY_SECONDS = 86400
+_TIMELINE = None
+_CLIP_INDEX = None
+
+
+def _timeline():
+    global _TIMELINE
+    if _TIMELINE is None:
+        try:
+            with open(os.path.join(config.MEMORY_DIR, "cctv_timeline.json"), encoding="utf-8") as f:
+                _TIMELINE = json.load(f)
+        except Exception:
+            _TIMELINE = {}
+    return _TIMELINE
+
+
+def timeline_cameras():
+    return (_timeline() or {}).get("cameras", [])
+
+
+def has_timeline():
+    return bool(timeline_cameras())
+
+
+def label_dates():
+    return list((_timeline() or {}).get("loop_label_dates", []))
+
+
+def _clip_index():
+    """video_id → [(camera_id, day_offset)…] (이력/알림용 — event 표시 배치만, 카메라당 1곳 분산)."""
+    global _CLIP_INDEX
+    if _CLIP_INDEX is None:
+        _CLIP_INDEX = {}
+        for cam in timeline_cameras():
+            for it in cam["playlist"]:
+                if it.get("event"):
+                    _CLIP_INDEX.setdefault(it["video_id"], []).append((cam["camera_id"], it["day_offset"]))
+    return _CLIP_INDEX
+
+
+def primary_placement(video_id):
+    """검색 dedupe용 — 그 클립의 대표 배치(camera_id 사전순 첫 번째). 없으면 None."""
+    places = sorted(_clip_index().get(video_id, []))
+    return places[0] if places else None
+
+
+def fmt_clock(total_s):
+    s = int(total_s) % DAY_SECONDS
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
 def video_meta(video_id, indexed_at=None):
     """video_id → {camera_id, camera_name, date}. cctv_map.json(camera_id·camera_name·recorded_at) 우선.
     date 는 녹화시각(recorded_at) → cctv_map date → 색인시각 → 기본값 순으로 결정."""
@@ -134,7 +187,13 @@ def enrich_videos(videos):
 
 
 def list_cameras(videos):
-    """색인된 영상 → 카메라 목록(+영상 수·구간 수) & 가용 날짜."""
+    """색인된 영상 → 카메라 목록 & 가용 날짜. 타임라인 있으면 9카메라(플레이리스트 동봉)."""
+    if has_timeline():
+        cams = [{"camera_id": c["camera_id"], "camera_name": c["camera_name"],
+                 "videos": [it["video_id"] for it in c["playlist"]],
+                 "playlist": c["playlist"], "segments": len(c["playlist"])}
+                for c in timeline_cameras()]
+        return cams, label_dates()
     cams, dates = {}, set()
     for v in videos:
         m = video_meta(v["video_id"], v.get("indexed_at"))
@@ -155,28 +214,43 @@ def build_alerts(all_segments, date=None, cams=None):
     반환: [{id, camera_id, camera_name, video_id, date, ts, seg_start, seg_end,
             temp, level, severity, event_type, caption, thumb, person_count, dwell_s}]
     """
+    tl = has_timeline()
+    cam_name = {c["camera_id"]: c["camera_name"] for c in timeline_cameras()}
     alerts = []
     for seg in all_segments:
         if int(seg.get("severity") or 0) < 1:
             continue                                   # 통상 활동(severity 0)은 알림 아님
         temp, level = seg_temp(seg)
-        m = video_meta(seg["video_id"], seg.get("indexed_at"))
-        if date and m["date"] != date:
-            continue
-        if cams and m["camera_id"] not in cams:
-            continue
-        start = seg["start_s"]
-        ac = abs_clock(seg["video_id"], start)
-        alerts.append({
-            "id": f"{seg['video_id']}:{int(start)}",
-            "camera_id": m["camera_id"], "camera_name": m["camera_name"],
-            "video_id": seg["video_id"], "date": m["date"],
-            "ts": ac.strftime("%H:%M:%S") if ac else _fmt_ts(start), "seg_start": start, "seg_end": seg["end_s"],
-            "temp": temp, "level": level, "severity": int(seg.get("severity") or 0),
-            "event_type": seg.get("event_type") or "normal", "caption": seg.get("caption") or "",
-            "thumb": seg.get("thumb"), "person_count": seg.get("person_count") or 0,
-            "dwell_s": seg.get("dwell_s") or 0,
-        })
+        sev = int(seg.get("severity") or 0)
+        if tl:
+            placements = _clip_index().get(seg["video_id"], [])
+            row_date = date or (label_dates()[0] if label_dates() else None)
+        else:
+            m = video_meta(seg["video_id"], seg.get("indexed_at"))
+            if date and m["date"] != date:
+                continue
+            placements = [(m["camera_id"], None)]
+            row_date = m["date"]
+            cam_name.setdefault(m["camera_id"], m["camera_name"])
+        for cam_id, off in placements:
+            if cams and cam_id not in cams:
+                continue
+            abs_s = (off + seg["start_s"]) if off is not None else None
+            if abs_s is not None:
+                ts = fmt_clock(abs_s)
+            else:
+                ac = abs_clock(seg["video_id"], seg["start_s"])
+                ts = ac.strftime("%H:%M:%S") if ac else _fmt_ts(seg["start_s"])
+            alerts.append({
+                "id": f"{cam_id}:{int(abs_s) if abs_s is not None else int(seg['start_s'])}",
+                "camera_id": cam_id, "camera_name": cam_name.get(cam_id, cam_id),
+                "video_id": seg["video_id"], "date": row_date,
+                "ts": ts, "abs_s": abs_s, "seg_start": seg["start_s"], "seg_end": seg["end_s"],
+                "temp": temp, "level": level, "severity": sev,
+                "event_type": seg.get("event_type") or "normal", "caption": seg.get("caption") or "",
+                "thumb": seg.get("thumb"), "person_count": seg.get("person_count") or 0,
+                "dwell_s": seg.get("dwell_s") or 0,
+            })
     alerts.sort(key=lambda a: (a["severity"], a["temp"]), reverse=True)
     return alerts
 
@@ -188,23 +262,36 @@ def build_history(all_segments, date=None, cams=None):
     반환 행: {camera_id, video_id, date, ts, start_s, end_s, caption, risk_type,
              severity, temp, level, is_alert, thumb}
     """
+    tl = has_timeline()
     rows = []
     for seg in all_segments:
-        m = video_meta(seg["video_id"], seg.get("indexed_at"))
-        if date and m["date"] != date:
-            continue
-        if cams and m["camera_id"] not in cams:
-            continue
         temp, level = seg_temp(seg)
         sev = int(seg.get("severity") or 0)
-        ac = abs_clock(seg["video_id"], seg["start_s"])
-        rows.append({
-            "camera_id": m["camera_id"], "video_id": seg["video_id"], "date": m["date"],
-            "ts": ac.strftime("%H:%M:%S") if ac else _fmt_ts(seg["start_s"]), "start_s": seg["start_s"], "end_s": seg["end_s"],
-            "caption": seg.get("caption") or "", "event_type": seg.get("event_type") or "normal",
-            "severity": sev, "temp": temp, "level": level,
-            "is_alert": sev >= 1, "thumb": seg.get("thumb"),
-            "dwell_s": seg.get("dwell_s") or 0, "person_count": seg.get("person_count") or 0,
-        })
-    rows.sort(key=lambda r: (r["camera_id"], r["start_s"]))
+        if tl:
+            placements = _clip_index().get(seg["video_id"], [])
+            row_date = date or (label_dates()[0] if label_dates() else None)
+        else:
+            m = video_meta(seg["video_id"], seg.get("indexed_at"))
+            if date and m["date"] != date:
+                continue
+            placements = [(m["camera_id"], None)]
+            row_date = m["date"]
+        for cam_id, off in placements:
+            if cams and cam_id not in cams:
+                continue
+            abs_s = (off + seg["start_s"]) if off is not None else None
+            if abs_s is not None:
+                ts = fmt_clock(abs_s)
+            else:
+                ac = abs_clock(seg["video_id"], seg["start_s"])
+                ts = ac.strftime("%H:%M:%S") if ac else _fmt_ts(seg["start_s"])
+            rows.append({
+                "camera_id": cam_id, "video_id": seg["video_id"], "date": row_date,
+                "ts": ts, "abs_s": abs_s, "start_s": seg["start_s"], "end_s": seg["end_s"],
+                "caption": seg.get("caption") or "", "event_type": seg.get("event_type") or "normal",
+                "severity": sev, "temp": temp, "level": level,
+                "is_alert": sev >= 1, "thumb": seg.get("thumb"),
+                "dwell_s": seg.get("dwell_s") or 0, "person_count": seg.get("person_count") or 0,
+            })
+    rows.sort(key=lambda r: (r["camera_id"], r["abs_s"] if r["abs_s"] is not None else r["start_s"]))
     return rows
