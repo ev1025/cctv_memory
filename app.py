@@ -278,8 +278,8 @@ def query_ep(question: str = Form(...), k: int = Form(5),
     seen, deduped = set(), []
     for s in out.get("segments", []):
         vid = s.get("video_id")
-        key = s.get("event_id") or f"{vid}:{int(s.get('start_s') or 0)}"
-        if key in seen:                                  # 같은 사건 1회만(클립이 여러 카메라에 펼쳐져도)
+        key = f"{vid}:{int(s.get('start_s') or 0)}"      # query 가 시간근접 dedup → 여기선 동일 구간만
+        if key in seen:                                  # 같은 구간 중복 방지(여러 카메라 배치 펼침 대비)
             continue
         seen.add(key)
         if camera:                                        # 포커스: 그 카메라 배치로 한정

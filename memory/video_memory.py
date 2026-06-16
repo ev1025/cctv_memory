@@ -216,23 +216,29 @@ def index_video(video_path, video_id=None, vlm_backend=None):
 
 
 def query(question, k=5, where=None, vlm_backend=None, answer=True):
-    """질문 → 구간 벡터검색 → event_id 로 묶어 사건 단위 반환. 반환: {answer, segments[]}.
+    """질문 → 구간(child) 벡터검색 → 시간 근접 중복 제거 → top-k 반환. 반환: {answer, segments[]}.
 
-    구간 단위로 매칭(의미 희석 없음)하고, 같은 사건이 여러 구간 걸리면 '최고 점수 구간'을 대표로
-    1건만 보여준다(start_s = 그 구간 시각 = 정확 seek). 정렬 = 최고 유사도순.
+    구간 단위로 매칭(의미 희석 없음). 같은 영상에서 시간이 가까운(같은 상황) 구간은 최고점만 남겨
+    중복을 막는다 — event_id 묶기 대신 시간근접 dedup(사건 분리가 약해 이 쪽이 견고). start_s = 정확 seek.
     """
     store = default_store()
-    hits = store.search(question, k=max(k * 4, 12), where=where)        # 구간 단위라 넉넉히 뽑아 묶음
+    hits = store.search(question, k=max(k * 6, 18), where=where)        # dedup 로 줄어드니 넉넉히 뽑음
     hits = [h for h in hits if h["score"] >= config.SEARCH_MIN_SCORE]   # 유사도 임계 미만 제외(무관 질의 차단)
     if not hits:
         return {"answer": "색인된 구간이 없거나 검색 결과가 없습니다.", "segments": []}
 
-    by_event = {}                                                       # event_id → 최고점수 구간
+    # 점수 높은 순으로 구간 직접 선택 — 같은 영상에서 SEARCH_DEDUP_GAP_S 초 이내 구간은 1개만(인접 중복 제거)
+    hits.sort(key=lambda h: h["score"], reverse=True)
+    gap = config.SEARCH_DEDUP_GAP_S
+    top = []
     for h in hits:
-        eid = h["metadata"].get("event_id") or h["id"]
-        if eid not in by_event or h["score"] > by_event[eid]["score"]:
-            by_event[eid] = h
-    top = sorted(by_event.values(), key=lambda h: h["score"], reverse=True)[:k]
+        vid, st = h["metadata"].get("video_id"), float(h["metadata"].get("start_s") or 0)
+        if any(p["metadata"].get("video_id") == vid
+               and abs(float(p["metadata"].get("start_s") or 0) - st) <= gap for p in top):
+            continue
+        top.append(h)
+        if len(top) >= k:
+            break
 
     segments = [{
         "video_id": h["metadata"].get("video_id"),
