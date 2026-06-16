@@ -41,8 +41,6 @@ MAX_NEW_TOKENS_MULTI = 384   # reasoning(CoT) + JSON 이라 출력이 길어 넉
 #   → 8GB 로컬 기본 6장(구간 전체 균일, 옛 2장보다 많고 빠름). 큰 GPU 서버는 VLM_MAX_FRAMES=16.
 VLM_MAX_FRAMES = int(os.environ.get("VLM_MAX_FRAMES", "6"))            # 8GB 빠른 한계(스필 없음). 서버는 env 로 16
 VLM_FRAME_MAX_SIDE = int(os.environ.get("VLM_FRAME_MAX_SIDE", "560"))  # 프레임 최대 변(px)
-# 모션 행위자 박스로 프레임 확대 크롭 — 와이드 CCTV의 작은 사람(낙상·싸움)을 VLM이 보게. 군집/인파는 자동 미적용(박스가 화면 대부분이면 전체).
-CROP_ACTORS = os.environ.get("CROP_ACTORS", "0") == "1"
 
 # ── 5) dtype / 양자화 — VRAM 효율 ────────────────────────────────────────────
 #    bfloat16: fp32 대비 메모리 1/2, RTX 5090 bf16 네이티브. 4bit/8bit 은 작은 GPU용.
