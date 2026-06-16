@@ -149,7 +149,7 @@ def index_video(video_path, video_id=None, vlm_backend=None):
     tracks = tracker.track_video(video_path)
 
     # ② 구간 분할
-    segs = segmenter.segment(video_path)
+    segs = segmenter.segment(video_path, tracks=tracks)   # 모션 가이드: 추적으로 '동작 순간'에 프레임 집중
     if not segs:
         print("[index] 구간 없음(코덱 미지원?)", flush=True)
         return {"video_id": video_id, "segments": 0, "events": 0}

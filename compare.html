@@ -124,19 +124,19 @@ function renderNow(t){
 }
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 
-// 벤치마크 정량 결과 (bench16, AI-Hub 19클립, 16프레임, A=VLM직접분류 / B=임베딩 오픈셋 / GT=실제라벨)
+// 벤치마크: 2프레임(이미지) → 16프레임(video) 입력 비교. AI-Hub 19클립. A=VLM직접분류 / B=임베딩 오픈셋 / GT=실제라벨
 const EVAL = {
   clips: 19,
   models: [
-    {name:'Qwen3-VL-8B',  A:'4/19 (21%)', B:'10/19 (53%)', best:true},
-    {name:'InternVL3-8B', A:'5/19 (26%)', B:'7/19 (37%)'},
-    {name:'Qwen2.5-VL-7B',A:'4/19 (21%)', B:'2/19 (11%)'},
+    {name:'InternVL3-8B', A:'26→32%', B:'37→42%', best:true},
+    {name:'Qwen3-VL-8B',  A:'21→21%', B:'53→16%'},
+    {name:'Qwen2.5-VL-7B',A:'21→42%', B:'11→37%'},
   ],
   cats: [
-    {cat:'flood 침수',     n:7, q3:5, iv:2, q25:1},
-    {cat:'crowd 인파밀집',  n:4, q3:4, iv:3, q25:0},
-    {cat:'gathering 군집',  n:2, q3:1, iv:0, q25:0},
-    {cat:'fight 싸움',      n:2, q3:0, iv:2, q25:1},
+    {cat:'flood 침수',     n:7, q3:2, iv:6, q25:6},
+    {cat:'crowd 인파밀집',  n:4, q3:0, iv:1, q25:0},
+    {cat:'gathering 군집',  n:2, q3:1, iv:1, q25:1},
+    {cat:'fight 싸움',      n:2, q3:0, iv:0, q25:0},
     {cat:'falldown 낙상',   n:2, q3:0, iv:0, q25:0},
     {cat:'invasion 침입',   n:2, q3:0, iv:0, q25:0},
   ],
@@ -144,15 +144,15 @@ const EVAL = {
 function renderBench(){
   const e=EVAL;
   document.getElementById('bench').innerHTML=
-    `<div class="bhd" onclick="this.parentElement.classList.toggle('collapsed')">📊 벤치마크 결과 — AI-Hub ${e.clips}클립 · 16프레임 <span class="caret">▾</span></div>`+
+    `<div class="bhd" onclick="this.parentElement.classList.toggle('collapsed')">📊 벤치마크 — 2프레임(이미지) → 16프레임(video) · AI-Hub ${e.clips}클립 <span class="caret">▾</span></div>`+
     `<div class="bbody">`+
-      `<table class="btab"><thead><tr><th>모델</th><th>A · VLM 직접분류</th><th>B · 임베딩 오픈셋</th></tr></thead><tbody>`+
+      `<table class="btab"><thead><tr><th>모델</th><th>A · VLM 직접 (2f→16f)</th><th>B · 임베딩 (2f→16f)</th></tr></thead><tbody>`+
         e.models.map(m=>`<tr class="${m.best?'best':''}"><td>${m.name}${m.best?' ★':''}</td><td>${m.A}</td><td><b>${m.B}</b></td></tr>`).join('')+
       `</tbody></table>`+
-      `<table class="btab"><thead><tr><th>카테고리</th><th>n</th><th>Qwen3-VL</th><th>InternVL3</th><th>Qwen2.5-VL</th></tr></thead><tbody>`+
-        e.cats.map(c=>`<tr><td>${c.cat}</td><td>${c.n}</td><td><b>${c.q3}</b></td><td>${c.iv}</td><td>${c.q25}</td></tr>`).join('')+
+      `<table class="btab"><thead><tr><th>카테고리 (B 정답수, 16f)</th><th>n</th><th>Qwen3-VL</th><th>InternVL3</th><th>Qwen2.5-VL</th></tr></thead><tbody>`+
+        e.cats.map(c=>`<tr><td>${c.cat}</td><td>${c.n}</td><td>${c.q3}</td><td><b>${c.iv}</b></td><td>${c.q25}</td></tr>`).join('')+
       `</tbody></table>`+
-      `<div class="bnote">A=클립을 한 번에 보고 유형 직접분류(짧은 사건 묻힘) · B=5초 구간 캡션을 임베딩으로 분류. 전 모델 B&gt;A, Qwen3-VL이 B 53%로 최고. falldown·invasion은 전 모델 0(난이도+라벨 품질).</div>`+
+      `<div class="bnote">16프레임 video 입력 결과는 <b>효과 혼조</b> — InternVL3·Qwen2.5는 개선됐으나 <b>Qwen3-VL은 B 53→16%로 하락</b>. <b>낙상·싸움·침입은 16프레임에도 전 모델 0</b> → 병목은 프레임 수가 아니라 분류·지각·라벨. (B&gt;A 유지는 InternVL3 뿐)</div>`+
     `</div>`;
 }
 renderBench();

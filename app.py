@@ -177,10 +177,11 @@ def compare_page():
 
 @app.get("/compare-data")
 def compare_data():
-    p = os.path.join(config.MEMORY_DIR, "captions_f16.json")
-    if not os.path.exists(p):
-        raise HTTPException(404, "captions_f16.json 없음 — dump_captions_json.py 먼저 실행")
-    return FileResponse(p)
+    for name in ("captions_v16.json", "captions_f16.json"):   # 16프레임 video(v16) 우선, 없으면 f16
+        p = os.path.join(config.MEMORY_DIR, name)
+        if os.path.exists(p):
+            return FileResponse(p)
+    raise HTTPException(404, "captions_*.json 없음 — dump_captions_json.py 먼저 실행")
 
 
 @app.get("/memory-status")
