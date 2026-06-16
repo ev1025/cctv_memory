@@ -12,9 +12,7 @@
   - 배회(loitering)는 VLM 이 아니라 tracker dwell_s/이동범위로 판정해 normal 사건을 승격.
 """
 import config  # ★ torch 보다 먼저
-
 from dataclasses import dataclass, field
-
 from memory.tracker import tracks_in_window
 
 

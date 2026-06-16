@@ -26,6 +26,26 @@ def _to_pil(image):
     return Image.open(image).convert("RGB")
 
 
+def _shrink(img, max_side):
+    """긴 변이 max_side 를 넘으면 비율 유지하며 축소 — multi-image OOM 을 '프레임 수' 대신 '해상도'로 관리(hailo 교훈)."""
+    w, h = img.size
+    m = max(w, h)
+    if max_side and m > max_side:
+        s = max_side / m
+        img = img.resize((max(1, round(w * s)), max(1, round(h * s))), Image.BILINEAR)
+    return img
+
+
+def _subsample(items, n):
+    """앞쪽 편향 없이 균일 간격 n 개로 고른다(원소 수 ≤ n 이면 그대로). 옛 images[:2](앞 2장만) 대체."""
+    items = list(items)
+    if n <= 0 or len(items) <= n:
+        return items
+    if n == 1:
+        return [items[len(items) // 2]]
+    return [items[int(round(i * (len(items) - 1) / (n - 1)))] for i in range(n)]
+
+
 def _strip_think(text):
     """GLM-4.1V 등의 <think>...</think> chain-of-thought 를 제거하고 최종 답만 남긴다(다른 모델엔 무해).
 
@@ -122,25 +142,48 @@ class VLMCaptioner:
     def caption_frames(self, images, prompt=None):
         """여러 프레임(이미지 리스트)을 한 프롬프트에 넣어 시계열 추론(multi-image). standard 백엔드 전용.
 
-        #3 영상 행동 인식: 프레임별 개별 캡션 대신, 연속 프레임을 한 번에 보여 시간 흐름을 추론하게 한다.
+        #3 영상 행동 인식: 프레임을 '영상(video)'으로 한 번에 넣어 시간 흐름을 추론하게 한다.
+        [왜 video] N개 이미지로 넣으면 각자 타일링돼 토큰이 폭증(8장≈12.5k tok)하지만, video 로 넣으면
+        시간 병합 + 프레임당 고정 격자라 토큰이 1/3(16장≈4.4k tok) → 8GB 에서도 다(多)프레임이 가능하다.
+        video 미지원 모델/오류 시 이미지 경로로 폴백.
         """
         if self.type != "standard":
             raise NotImplementedError(f"multi-image 는 standard 백엔드만 지원합니다(현재 type={self.type}).")
-        images = [_to_pil(im) for im in images[:2]]   # 프레임 2장 제한 — 8GB GPU multi-image OOM 방지
+        # 구간 전체를 균일 샘플(앞쪽 편향 제거) + 원본 해상도 정리 후 VLM_MAX_FRAMES 장 투입.
+        frames = [_shrink(_to_pil(im), config.VLM_FRAME_MAX_SIDE)
+                  for im in _subsample(images, config.VLM_MAX_FRAMES)]
         prompt = prompt or "다음 연속 프레임(시간순)의 변화를 바탕으로 장면을 한국어로 간단히 설명하세요."
-        content = [{"type": "image", "image": im} for im in images]
-        content.append({"type": "text", "text": prompt})
-        messages = [{"role": "user", "content": content}]
-        inputs = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True,
-            return_dict=True, return_tensors="pt",
-        ).to(self.model.device)
+        try:
+            inputs = self._video_inputs(frames, prompt)
+        except Exception as e:
+            print(f"[VLM] video 입력 실패({type(e).__name__}) → 이미지 경로 폴백", flush=True)
+            inputs = self._image_inputs(frames, prompt)
+        in_len = inputs["input_ids"].shape[1]
         max_tok = getattr(config, "MAX_NEW_TOKENS_MULTI", config.MAX_NEW_TOKENS)
         out = self.model.generate(**inputs, max_new_tokens=max_tok, do_sample=False)
-        trimmed = out[:, inputs["input_ids"].shape[1]:]
         text = self.processor.batch_decode(
-            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
+            out[:, in_len:], skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
         return _strip_think(text)
+
+    def _video_inputs(self, frames, prompt):
+        """프레임을 video 로 투입 — apply_chat_template(텍스트만) 후 processor(videos=) 로 프레임 전달(hailo 방식)."""
+        messages = [{"role": "user", "content": [{"type": "video"}, {"type": "text", "text": prompt}]}]
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        try:                                   # do_sample_frames=False: 추출 프레임 그대로(프로세서 내부 재샘플 차단)
+            inputs = self.processor(text=[text], videos=[frames], padding=True,
+                                    return_tensors="pt", do_sample_frames=False)
+        except (TypeError, ValueError):        # 일부 프로세서는 do_sample_frames 미지원
+            inputs = self.processor(text=[text], videos=[frames], padding=True, return_tensors="pt")
+        return inputs.to(self.model.device)
+
+    def _image_inputs(self, frames, prompt):
+        """폴백: 프레임을 N개 이미지로 투입(토큰 많음 — video 미지원 모델용)."""
+        content = [{"type": "image", "image": im} for im in frames]
+        content.append({"type": "text", "text": prompt})
+        messages = [{"role": "user", "content": content}]
+        return self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt").to(self.model.device)
 
     def _caption_standard(self, image, prompt):
         messages = [{"role": "user", "content": [

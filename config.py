@@ -35,6 +35,13 @@ VLM_BACKEND = os.environ.get("VLM_BACKEND", "internvl3")
 MAX_NEW_TOKENS = 64
 MAX_NEW_TOKENS_MULTI = 384   # reasoning(CoT) + JSON 이라 출력이 길어 넉넉히
 
+# VLM 영상 캡션 입력 — 한 구간의 여러 프레임을 '균일 샘플'해 video 로 투입(image_to_text.caption_frames).
+#   [측정] InternVL3-8B 4bit @ 8GB, video 경로(토큰=프레임당 ~280, 해상도 무관 — N개 이미지는 8장에 12.5k tok 폭증):
+#   4장=6.1GB·2초 / 6장=6.5GB·2초(빠른 한계) / 8장=7.1GB·15초(스필) / 16장=10.9GB·49초(스필).
+#   → 8GB 로컬 기본 6장(구간 전체 균일, 옛 2장보다 많고 빠름). 큰 GPU 서버는 VLM_MAX_FRAMES=16.
+VLM_MAX_FRAMES = int(os.environ.get("VLM_MAX_FRAMES", "6"))            # 8GB 빠른 한계(스필 없음). 서버는 env 로 16
+VLM_FRAME_MAX_SIDE = int(os.environ.get("VLM_FRAME_MAX_SIDE", "560"))  # 프레임 최대 변(px)
+
 # ── 5) dtype / 양자화 — VRAM 효율 ────────────────────────────────────────────
 #    bfloat16: fp32 대비 메모리 1/2, RTX 5090 bf16 네이티브. 4bit/8bit 은 작은 GPU용.
 TORCH_DTYPE = torch.bfloat16
@@ -68,9 +75,9 @@ SEARCH_MIN_SCORE = float(os.environ.get("SEARCH_MIN_SCORE", "0.52"))
 # RAG 답변 프롬프트 — 검색된 구간(시각+캡션) + 대표 프레임을 근거로 답변. .format(question=, context=)
 RAG_ANSWER_PROMPT = (
     "질문: {question}\n\n"
-    "다음은 영상에서 검색된 관련 구간들입니다(시각·캡션):\n{context}\n\n"
-    "위 구간 정보와 함께 제공된 대표 프레임을 근거로 질문에 한국어로 답하세요. "
-    "답변에는 근거가 된 시각을 [MM:SS] 형식으로 인용하세요."
+    "검색된 CCTV 행동 이력(시각 및 캡션):\n{context}\n\n"
+    "위 검색된 이력과 제공된 영상 프레임을 종합하여 질문에 한국어로 답하세요. "
+    "단, 답변 시 반드시 검색된 이력을 우선적인 근거로 사용하고, 인용 시 [MM:SS] 형식으로 시각을 표기하세요."
 )
 
 # ── 행동 이벤트 메모리 (주차장 CCTV 행동/특이사항 이력) ───────────────────────
@@ -99,10 +106,10 @@ SEGMENT_EVENT_PROMPT = (
 # (비교용) 유형 분류까지 시키는 프롬프트 — 중립 묘사형(SEGMENT_EVENT_PROMPT) 대비 '묘사 차이' 확인용.
 #   scripts/compare_prompts.py 가 같은 구간에 둘을 돌려, 분류를 시키면 묘사가 어떻게 달라지는지 보여준다.
 SEGMENT_CLASSIFY_PROMPT = (
-    "다음 연속 프레임은 같은 5초 구간을 시간순으로 본 것입니다. "
-    "이 구간에서 사람과 사물이 실제로 무엇을 하는지 객관적 사실로 한국어로 묘사하고, 상황 유형을 분류하세요.\n"
-    "기호 없이 순수한 텍스트로 아래 두 줄 형식만 작성하세요.\n\n"
-    "보이지 않는 상황을 '없음'이라고 나열하지 말고, 화면에 실제로 보이는 것만 묘사하세요.\n\n"
+    "이 연속 프레임 영상에서 사람과 사물이 실제로 무엇을 하는지 객관적 사실로 한국어로 묘사하고, 상황 유형을 분류하세요.\n"
+    "답변은 기호 없이 아래 두 줄 형식으로만 작성하세요.\n\n"
+    "주의사항:\n"
+    "1. 보이지 않는 상황을 '없음'이라고 나열하지 말고, 오직 화면에 실제로 보이는 것만 묘사하세요.\n\n"
     "캡션: 장면을 1~2문장으로 구체적으로\n"
     "유형: falldown / fight / invasion / gathering / crowd / flood / normal 중 하나"
 )
