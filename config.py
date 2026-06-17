@@ -24,16 +24,11 @@ import torch  # 위 환경변수 세팅 이후 import
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")     # 데이터(영상·임베딩 등)
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")    # 산출물(vmem: chroma·thumbs)
-SAMPLE_IMAGE = os.path.join(ASSETS_DIR, "sample.jpg")  # image_to_text 단독 실행 시 기본 입력(없으면 인자로 지정)
 
 # ── 4) 기본 VLM 백엔드 (models.py 레지스트리 키) ───────────────
 VLM_BACKEND = os.environ.get("VLM_BACKEND", "internvl3")
 
-# (i2t 분류 평가·도형 PoC·multi-image 프롬프트는 3d_vision 레포로 이동됨)
-
-# (이상행동 분석 프롬프트 VLM_ANOMALY_PROMPT 는 3d_vision 레포로 이동)
-MAX_NEW_TOKENS = 64
-MAX_NEW_TOKENS_MULTI = 384   # reasoning(CoT) + JSON 이라 출력이 길어 넉넉히
+MAX_NEW_TOKENS_MULTI = 384   # VLM 캡션 생성 최대 토큰 (reasoning 모델은 출력이 길어 넉넉히)
 
 # VLM 영상 캡션 입력 — 한 구간의 여러 프레임을 '균일 샘플'해 video 로 투입(image_to_text.caption_frames).
 #   [측정] InternVL3-8B 4bit @ 8GB, video 경로(토큰=프레임당 ~280, 해상도 무관 — N개 이미지는 8장에 12.5k tok 폭증):

@@ -8,8 +8,8 @@ import time
 import models
 from huggingface_hub import snapshot_download
 
-VLM_KEYS = ["qwen2-vl", "qwen2.5-vl", "qwen3-vl", "internvl3", "pixtral"]   # 비교했던 계열
-EMBED_KEYS = ["bge-m3"]                                                      # video-memory 임베딩
+VLM_KEYS = ["internvl3", "qwen3-vl", "qwen2.5-vl"]   # 운영 3종
+EMBED_KEYS = ["bge-m3"]                              # video-memory 임베딩
 ids = ([models.VLM_REGISTRY[k]["id"] for k in VLM_KEYS]
        + [models.EMBED_REGISTRY[k]["id"] for k in EMBED_KEYS])
 
