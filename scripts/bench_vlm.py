@@ -41,7 +41,7 @@ def main():
     clip_segs = {v: s for v, s in clip_segs.items() if s}
     print(f"[clips] {[(v, len(s)) for v, s in clip_segs.items()]}", flush=True)
 
-    rows = []      # (backend, vid, gt, seg_i, caption, event_type, sev, sec)
+    rows = []      # (backend, vid, gt, seg_i, caption, sec)
     vram = {}      # backend -> (load_s, load_gb, peak_gb)
     for backend in CANDIDATES:
         print(f"\n{'='*60}\n[{backend}] 로딩...", flush=True)
@@ -59,8 +59,8 @@ def main():
                 t = time.time()
                 raw = vlm.caption_frames(seg.frames, config.SEGMENT_EVENT_PROMPT)
                 sec = round(time.time() - t, 2)
-                cap, lab = video_memory.parse_event(raw)
-                rows.append((backend, vid, CLIPS[vid], i, cap, lab["event_type"], lab["severity"], sec))
+                cap = video_memory.parse_event(raw)
+                rows.append((backend, vid, CLIPS[vid], i, cap, sec))
         vram[backend] = (load_s, load_gb, round(torch.cuda.max_memory_allocated() / 1e9, 2))
         vlm.unload()
 
@@ -72,14 +72,14 @@ def main():
         print(f"\n[{vid} = {gt}]")
         for backend in CANDIDATES:
             for r in [x for x in rows if x[0] == backend and x[1] == vid]:
-                print(f"  {backend:11} seg{r[3]} -> {r[5]:18}(sev{r[6]}) {r[7]:>5}s | {r[4][:54]}")
+                print(f"  {backend:11} seg{r[3]} {r[5]:>5}s | {r[4][:60]}")
 
     # 3) 자원/속도 요약
     print("\n===== 자원·속도 요약 =====")
     print(f"{'VLM':12} {'load_s':>7} {'load_GB':>8} {'peak_GB':>8} {'8GB':>5} {'평균추론':>8}")
     for b in CANDIDATES:
         ls, lg, pg = vram.get(b, ("-", "-", "-"))
-        secs = [r[7] for r in rows if r[0] == b]
+        secs = [r[5] for r in rows if r[0] == b]
         avg = round(sum(secs) / len(secs), 2) if secs else "-"
         fit = "O" if isinstance(pg, float) and pg < 8 else ("X" if isinstance(pg, float) else "-")
         print(f"{b:12} {str(ls):>7} {str(lg):>8} {str(pg):>8} {fit:>5} {str(avg):>8}")

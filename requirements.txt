@@ -1,5 +1,5 @@
 ﻿# ============================================================================
-#  3D Vision PoC — Image→Text→Image 파이프라인 의존성
+#  cctv_memory — CCTV 행동 이력 RAG (영상 구간 캡션 색인 + 검색) 의존성
 #  대상 환경: RTX 5090 (Blackwell / sm_120) → CUDA 12.8 빌드의 PyTorch 필수
 #
 #  [설치 순서 권장]  (README 참고)
@@ -14,14 +14,12 @@
 torch>=2.7.0
 torchvision>=0.22.0
 
-# ---- VLM (Image → Text) -----------------------------------------------------
+# ---- VLM (영상 구간 캡션) ----------------------------------------------------
 transformers>=4.49.0
 accelerate>=1.3.0          # device_map="auto" 분산 적재
-qwen-vl-utils>=0.0.8       # Qwen2-VL 입력 전처리 (기본 백엔드)
-sentencepiece              # LLaVA 토크나이저
+qwen-vl-utils>=0.0.8       # Qwen-VL 계열 입력 전처리
+sentencepiece              # 토크나이저
 einops
-
-# ---- Diffusion (Text → Image) ----------------------------------------------
 
 # ---- 양자화 (8GB GPU 옵션; 32GB 2장 환경에선 불필요) -------------------------
 # Blackwell(sm_120) 은 bitsandbytes 0.45+ 에서 지원. 미사용 시 import 안 하면 됨.
@@ -30,17 +28,13 @@ bitsandbytes>=0.45.0
 # ---- 공통 -------------------------------------------------------------------
 pillow
 protobuf
-opencv-python-headless          # 영상 프레임 추출(app.py) · 도형 채점(shape_scorer)
+opencv-python-headless          # 영상 프레임 추출(segmenter.py)
 
-# ---- API 서빙 (app.py; 선택) ------------------------------------------------
+# ---- API 서빙 (app.py) ------------------------------------------------------
 fastapi
 uvicorn[standard]
 python-multipart                # FastAPI 파일 업로드(Form/File)
 
-# ---- 1차 필터 (YOLO; yolo_trigger.py) ---------------------------------------
-ultralytics                     # YOLOv8 사람/객체 감지(VLM 앞단 트리거, #1·2)
-
 # ---- 영상이력 메모리 (memory/; ChromaDB + bge-m3) ---------------------------
-# (원본 3d_vision requirements.txt 누락분 — 마이그레이션 검증에서 보강)
 chromadb                        # vector_store.py: 벡터 DB (영상 구간 색인/검색)
 sentence-transformers           # text_embedder.py: bge-m3 다국어 임베딩

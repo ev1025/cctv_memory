@@ -386,19 +386,10 @@ button { font-family: inherit; }
 
 /* ── 태그/배지 ── */
 .tag { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 10px; flex-shrink: 0; }
-.tag.fire, .tag.smoke { background: var(--crit-bg); color: var(--red); }
-.tag.fall, .tag.machine { background: var(--warn-bg); color: var(--amber); }
-.tag.flammable { background: var(--crit-bg); color: var(--red); }
-.tag.smoking { background: var(--warn-bg); color: var(--amber); }
-.tag.loitering { background: rgba(96,165,250,.16); color: var(--blue); }
-.tag.vehicle_interaction { background: rgba(96,165,250,.12); color: var(--blue); }
-.tag.fight { background: var(--crit-bg); color: var(--red); }
-.tag.falldown { background: var(--warn-bg); color: var(--amber); }
-.tag.invasion, .tag.intrusion { background: var(--warn-bg); color: var(--amber); }
+.tag.fight, .tag.falldown { background: var(--crit-bg); color: var(--red); }
+.tag.invasion { background: var(--warn-bg); color: var(--amber); }
 .tag.crowd, .tag.gathering, .tag.flood { background: rgba(96,165,250,.16); color: var(--blue); }
 .tag.none, .tag.normal, .tag.unknown { background: rgba(139,147,167,.16); color: var(--mut); }
-.dwell { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; flex-shrink: 0;
-  background: var(--panel2); color: var(--mut); font-family: var(--mono); }
 
 /* ── 검색 ── */
 .search { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }

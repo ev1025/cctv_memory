@@ -1,4 +1,4 @@
-"""reclassify.py — 색인된 사건을 event_classes.json 기준으로 재분류(event_type·severity 갱신).
+"""reclassify.py — 색인된 구간을 event_classes.json 기준으로 재분류(event_type·label 갱신).
 
 VLM 안 씀(저장된 캡션 임베딩 ↔ 클래스 설명 임베딩 비교만) → 재색인 불필요.
 클래스 목록(event_classes.json)을 바꾼 뒤 이 스크립트만 돌리면 콘솔에 즉시 반영.
@@ -21,14 +21,10 @@ def main():
     clf = EventClassifier()
     upd_ids, upd_metas, counts = [], [], {}
     for id_, meta, emb in zip(ids, res["metadatas"], res["embeddings"]):
-        if meta.get("by_tracker"):                 # 추적기반 사건(배회)은 분류기 건드리지 않음
-            et = meta.get("event_type", "loitering")
-            counts[et] = counts.get(et, 0) + 1
-            continue
         r = clf.classify_vec(list(emb))            # 저장된 구간 임베딩 재사용(재임베딩 X)
         m = dict(meta)
         m["event_type"] = r["event_type"]
-        m["severity"] = r["severity"]
+        m["label"] = r["label"]
         upd_ids.append(id_)
         upd_metas.append(m)
         counts[r["event_type"]] = counts.get(r["event_type"], 0) + 1

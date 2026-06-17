@@ -1,7 +1,7 @@
 """cctv_meta.py — CCTV 관제 메타 레이어(카메라·날짜·열화상 온도·고온 알림).
 
 [왜 별도 모듈]
-  현재 색인 데이터(ChromaDB)에는 video_id·구간·VLM 캡션·severity 만 있고
+  현재 색인 데이터(ChromaDB)에는 video_id·구간·VLM 캡션·event_type 만 있고
   '카메라 번호 / 촬영 일자 / 열화상 온도' 는 없다. 실제 운영에선 이 값들이
   - camera_id/date : CCTV 메타(파일명 규칙 or DMS) 에서,
   - 온도/열화상   : 열화상 카메라 피드/로그 에서
@@ -122,18 +122,21 @@ def video_meta(video_id, indexed_at=None):
     return {"camera_id": cam, "camera_name": ov.get("camera_name") or cam, "date": date}
 
 
+def is_special(event_type):
+    """특이사건(알림 대상) 여부 — normal/unknown 이 아니면 특이사건."""
+    return event_type not in ("normal", "unknown", None)
+
+
 def _synth_temp(seg):
-    """구간 → 열화상 온도(℃) 파생(데모, 디스플레이용). event_type/severity 가 높을수록 고온.
+    """구간 → 열화상 온도(℃) 파생(데모, 디스플레이용). 특이 유형일수록 고온.
 
     실데이터 연동 시 이 함수만 '해당 시각 열화상 최고온도 조회' 로 교체하면 된다.
     (참고: 화재 감지는 별도 열화상 카메라가 담당 — 여기 온도는 콘솔 표시용 합성값.)
     """
-    base = {"flammable": 70.0, "smoking": 58.0, "fall": 46.0, "vehicle_interaction": 42.0,
-            "loitering": 40.0, "normal": 36.0, "unknown": 36.0}
-    sev = int(seg.get("severity") or 0)
-    t = base.get(seg.get("event_type") or "normal", 36.0) + sev * 6.5
+    base = {"fight": 66.0, "falldown": 58.0, "crowd": 54.0, "invasion": 52.0,
+            "gathering": 48.0, "flood": 44.0, "normal": 36.0, "unknown": 36.0}
+    t = base.get(seg.get("event_type") or "normal", 36.0)
     t += (int(seg.get("start_s") or 0) % 7) * 0.5            # 구간별 미세 변동(데모 현실감)
-    t += min(int(seg.get("person_count") or 0), 3) * 0.4
     return round(t, 1)
 
 
@@ -207,21 +210,20 @@ def list_cameras(videos):
 
 
 def build_alerts(all_segments, date=None, cams=None):
-    """전체 사건 → 특이사건 알림(severity ≥ 1). date·cams(set) 로 필터, 심각도·온도 높은 순.
+    """전체 구간 → 특이사건 알림(event_type ∉ {normal, unknown}). date·cams(set) 로 필터, 온도 높은 순.
 
-    화재→행동 전환에 따라 알림 기준은 '합성 고온'이 아니라 '사건 심각도'다(낙상·배회·흡연·인화물 등).
+    화재→행동 전환에 따라 알림 기준은 '합성 고온'이 아니라 '사건 유형'이다(쓰러짐·싸움·침입·군집·인파·침수).
     온도(temp)는 디스플레이용으로 함께 싣는다.
     반환: [{id, camera_id, camera_name, video_id, date, ts, seg_start, seg_end,
-            temp, level, severity, event_type, caption, thumb, person_count, dwell_s}]
+            temp, level, event_type, label, caption, thumb}]
     """
     tl = has_timeline()
     cam_name = {c["camera_id"]: c["camera_name"] for c in timeline_cameras()}
     alerts = []
     for seg in all_segments:
-        if int(seg.get("severity") or 0) < 1:
-            continue                                   # 통상 활동(severity 0)은 알림 아님
+        if not is_special(seg.get("event_type")):
+            continue                                   # 통상 활동(normal/unknown)은 알림 아님
         temp, level = seg_temp(seg)
-        sev = int(seg.get("severity") or 0)
         if tl:
             placements = _clip_index().get(seg["video_id"], [])
             row_date = date or (label_dates()[0] if label_dates() else None)
@@ -246,27 +248,26 @@ def build_alerts(all_segments, date=None, cams=None):
                 "camera_id": cam_id, "camera_name": cam_name.get(cam_id, cam_id),
                 "video_id": seg["video_id"], "date": row_date,
                 "ts": ts, "abs_s": abs_s, "seg_start": seg["start_s"], "seg_end": seg["end_s"],
-                "temp": temp, "level": level, "severity": sev,
-                "event_type": seg.get("event_type") or "normal", "caption": seg.get("caption") or "",
-                "thumb": seg.get("thumb"), "person_count": seg.get("person_count") or 0,
-                "dwell_s": seg.get("dwell_s") or 0,
+                "temp": temp, "level": level,
+                "event_type": seg.get("event_type") or "normal", "label": seg.get("label"),
+                "caption": seg.get("caption") or "", "thumb": seg.get("thumb"),
             })
-    alerts.sort(key=lambda a: (a["severity"], a["temp"]), reverse=True)
+    alerts.sort(key=lambda a: a["temp"], reverse=True)
     return alerts
 
 
 def build_history(all_segments, date=None, cams=None):
-    """전체 구간 이력(시간순) — 평소 보는 단일 타임라인. 고온 구간은 is_alert=True 로 마킹.
+    """전체 구간 이력(시간순) — 평소 보는 단일 타임라인. 특이사건 구간은 is_alert=True 로 마킹.
 
     date·cams(set) 로 필터. 다중 카메라면 (카메라, 시간) 순으로 병합 정렬.
-    반환 행: {camera_id, video_id, date, ts, start_s, end_s, caption, risk_type,
-             severity, temp, level, is_alert, thumb}
+    반환 행: {camera_id, video_id, date, ts, start_s, end_s, caption, event_type, label,
+             temp, level, is_alert, thumb}
     """
     tl = has_timeline()
     rows = []
     for seg in all_segments:
         temp, level = seg_temp(seg)
-        sev = int(seg.get("severity") or 0)
+        special = is_special(seg.get("event_type"))
         if tl:
             placements = _clip_index().get(seg["video_id"], [])
             row_date = date or (label_dates()[0] if label_dates() else None)
@@ -289,9 +290,8 @@ def build_history(all_segments, date=None, cams=None):
                 "camera_id": cam_id, "video_id": seg["video_id"], "date": row_date,
                 "ts": ts, "abs_s": abs_s, "start_s": seg["start_s"], "end_s": seg["end_s"],
                 "caption": seg.get("caption") or "", "event_type": seg.get("event_type") or "normal",
-                "severity": sev, "temp": temp, "level": level,
-                "is_alert": sev >= 1, "thumb": seg.get("thumb"),
-                "dwell_s": seg.get("dwell_s") or 0, "person_count": seg.get("person_count") or 0,
+                "label": seg.get("label"), "temp": temp, "level": level,
+                "is_alert": special, "thumb": seg.get("thumb"),
             })
     rows.sort(key=lambda r: (r["camera_id"], r["abs_s"] if r["abs_s"] is not None else r["start_s"]))
     return rows

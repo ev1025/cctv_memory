@@ -2,11 +2,6 @@
 
 영상 전체를 SEGMENT_SECONDS 그리드로 빠짐없이 잘라, 각 구간에서 SEGMENT_FRAMES 장(시간순)을 뽑는다.
 VLM 은 호출하지 않는다 — 구간 목록(Segment)만 반환(색인은 video_memory 가 수행).
-
-[설계] 사람·차량 등장/체류는 tracker(YOLO+ByteTrack)가 전체 영상에서 이미 판정한다(tracks_in_window).
-       그래서 구간 분할 단계에서 YOLO 를 또 돌리지 않는다(중복 제거 — 예전엔 구간 중앙 1프레임에
-       YOLO 를 재실행해 +2 프레임을 보강했으나, 프레임 수를 키운 지금은 실익이 없고 tracker 와 중복).
-       활동(activity) 판정은 VLM 캡션(parse_event)이, person_count 는 tracker 가 담당한다.
 """
 import config  # ★ torch 보다 먼저
 
@@ -22,8 +17,6 @@ class Segment:
     start_s: float
     end_s: float
     frames: list           # list[PIL.Image] — 시간순 대표 프레임
-    trigger: str = "grid"  # 항상 grid (YOLO 보강 제거). 필드는 하위호환 위해 유지.
-    person_count: int = 0  # 구간 단위는 미사용 — 이벤트 person_count 는 tracker 가 채움.
 
 
 def _grab(cap, idx):
@@ -56,7 +49,7 @@ def segment(video_path, seconds=None, frames_per_seg=None):
         e = min(t + seconds, dur)
         frames = _seg_frames(cap, t, e, fps, frames_per_seg)
         if frames:
-            segs.append(Segment(round(t, 2), round(e, 2), frames, "grid"))
+            segs.append(Segment(round(t, 2), round(e, 2), frames))
         t += seconds
     cap.release()
     print(f"[segmenter] {len(segs)} 구간 (그리드 {frames_per_seg}프레임/구간), {dur:.1f}s", flush=True)

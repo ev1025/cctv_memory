@@ -1,12 +1,12 @@
 """
-app.py — FastAPI: Image→Text 감시 API
+app.py — FastAPI: CCTV 행동 이력 RAG 콘솔 (영상 색인 + 자연어 검색 + 관제 메타).
 
-  POST /image-to-text : 이미지 → 텍스트 (VLM)
-  POST /video-to-text : 영상 → 프레임 추출 → VLM (multi-image 시계열)
-  GET  /health · GET /models
+  POST /index-video : mp4 업로드 → 5초 구간 캡션 색인(ChromaDB)
+  POST /query       : 자연어 질문 → 벡터검색(구간 단위)
+  GET  /videos · /cameras · /alerts · /history · /segments · /timeline : 관제 콘솔
+  GET  /health · /models
 
-[격리] Text→Image(text-to-image, img2img)는 t2i/ 로 분리(보류). 이 API 는 Image→Text 감시 라인만.
-[모델] VLM lazy 로드 + 슬롯 캐시(1개 상주). GPU 는 _lock 으로 직렬 사용.
+[모델] VLM/임베더는 video_memory·vector_store 가 슬롯 캐시로 1개 상주. GPU 는 _lock 으로 직렬 사용.
 [실행] uvicorn app:app --host 0.0.0.0 --port 8000   (로컬: run_local.bat = 4bit)
 """
 import config  # ★ torch 보다 먼저 (GPU 격리/HF 캐시)
@@ -14,28 +14,15 @@ import config  # ★ torch 보다 먼저 (GPU 격리/HF 캐시)
 import os
 import threading
 
-import cv2
-from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import models
-from image_to_text import VLMCaptioner
 
-app = FastAPI(title="3D-Vision Image→Text API", version="2.0")
+app = FastAPI(title="CCTV 행동 이력 RAG 콘솔", version="2.0")
 
-_lock = threading.Lock()               # GPU 직렬 사용
-_vlm = {"name": None, "obj": None}
-
-
-def _get_vlm(name):
-    if _vlm["name"] != name:
-        if _vlm["obj"] is not None:
-            _vlm["obj"].unload()
-        _vlm["obj"] = VLMCaptioner(name).load()
-        _vlm["name"] = name
-    return _vlm["obj"]
+_lock = threading.Lock()               # GPU 직렬 사용(색인 VLM)
 
 
 def _store():
@@ -44,71 +31,14 @@ def _store():
     return default_store()
 
 
-def _video_frames(file: UploadFile, n):
-    """업로드 영상 → 균등 n 장 프레임을 PIL 로 추출."""
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-    tmp = os.path.join(config.OUTPUT_DIR, "_upload" + os.path.splitext(file.filename or ".mp4")[1])
-    with open(tmp, "wb") as f:
-        f.write(file.file.read())
-    cap = cv2.VideoCapture(tmp)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    raw = []
-    if total <= 0:
-        ok, fr = cap.read()
-        if ok:
-            raw.append(fr)
-    else:
-        idxs = [max(0, int(total * (i + 1) / (n + 1))) for i in range(n)]
-        for idx in idxs:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ok, fr = cap.read()
-            if ok:
-                raw.append(fr)
-    cap.release()
-    return [Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)) for f in raw]
-
-
 @app.get("/health")
 def health():
-    return {"status": "ok", "gpu": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "vlm_loaded": _vlm["name"]}
+    return {"status": "ok", "gpu": os.environ.get("CUDA_VISIBLE_DEVICES")}
 
 
 @app.get("/models")
 def list_models():
     return {"vlm": list(models.VLM_REGISTRY)}
-
-
-@app.post("/image-to-text")
-def image_to_text_ep(file: UploadFile = File(...),
-                     backend: str = Form("qwen2-vl"),
-                     prompt: str = Form(None)):
-    if backend not in models.VLM_REGISTRY:
-        raise HTTPException(400, f"unknown vlm '{backend}'. available: {list(models.VLM_REGISTRY)}")
-    img = Image.open(file.file).convert("RGB")
-    with _lock:
-        text = _get_vlm(backend).caption(img, prompt or None)
-    return {"backend": backend, "text": text}
-
-
-@app.post("/video-to-text")
-def video_to_text_ep(file: UploadFile = File(...),
-                     backend: str = Form("qwen2-vl"),
-                     prompt: str = Form(None),
-                     num_frames: int = Form(3),
-                     multi_image: bool = Form(True)):
-    if backend not in models.VLM_REGISTRY:
-        raise HTTPException(400, f"unknown vlm '{backend}'. available: {list(models.VLM_REGISTRY)}")
-    frames = _video_frames(file, max(1, num_frames))
-    if not frames:
-        raise HTTPException(400, "프레임 추출 실패(영상 코덱 미지원일 수 있음)")
-    with _lock:
-        cap = _get_vlm(backend)
-        if multi_image:
-            text = cap.caption_frames(frames, prompt or None)
-            return {"backend": backend, "frames": len(frames), "mode": "multi-image", "text": text}
-        texts = [cap.caption(f, prompt or None) for f in frames]
-    return {"backend": backend, "frames": len(frames), "mode": "per-frame", "texts": texts}
 
 
 # ── video-memory: UI 서빙 + 영상 이력 색인(RAG) ──────────────────────────────
@@ -216,7 +146,7 @@ def cameras_ep():
 
 @app.get("/alerts")
 def alerts_ep(date: str = None, cams: str = None):
-    """열화상 고온 알림(온도 ≥ 주의). date·cams(콤마구분) 로 필터, 온도 높은 순."""
+    """특이사건 알림(event_type ∉ {normal, unknown}). date·cams(콤마구분) 로 필터, 온도 높은 순."""
     import cctv_meta
     cam_set = {c.strip() for c in cams.split(",") if c.strip()} if cams else None
     return {"alerts": cctv_meta.build_alerts(_store().all_segments(), date=date or None, cams=cam_set)}
@@ -224,10 +154,10 @@ def alerts_ep(date: str = None, cams: str = None):
 
 @app.get("/history")
 def history_ep(date: str = None, cams: str = None):
-    """전체 구간 이력(평소 보는 단일 타임라인). 고온 구간은 is_alert=True 로 마킹."""
+    """전체 구간 이력(평소 보는 단일 타임라인). 특이사건 구간은 is_alert=True 로 마킹."""
     import cctv_meta
     cam_set = {c.strip() for c in cams.split(",") if c.strip()} if cams else None
-    return {"segments": cctv_meta.build_history(_store().raw_segments(), date=date or None, cams=cam_set)}
+    return {"segments": cctv_meta.build_history(_store().all_segments(), date=date or None, cams=cam_set)}
 
 
 @app.get("/segments")
@@ -264,7 +194,7 @@ def query_ep(question: str = Form(...), k: int = Form(5),
              camera: str = Form(None), backend: str = Form(None)):
     """자연어 질문 → 벡터검색(retrieval-only, 빠름). 반환: {segments[]} (사건에 카메라/온도 부착).
 
-    special_only=True → 특이사건(severity≥1)만. event_type 지정 시 해당 유형만(예: fall, loitering).
+    special_only=True → 특이사건(normal/unknown 제외)만. event_type 지정 시 해당 유형만(예: fight, falldown).
     [속도] 임베더는 _store() 로 1회 로드 캐시. VLM RAG 답변은 생략(검색은 즉시 결과 반환).
     """
     from memory import video_memory
@@ -273,7 +203,7 @@ def query_ep(question: str = Form(...), k: int = Form(5),
     if event_type:
         where = {"event_type": event_type}
     elif special_only:
-        where = {"severity": {"$gte": 1}}
+        where = {"event_type": {"$nin": ["normal", "unknown"]}}
     out = video_memory.query(question, k=k, where=where, answer=False)   # VLM 생략 → 빠름
     seen, deduped = set(), []
     for s in out.get("segments", []):

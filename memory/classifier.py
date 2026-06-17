@@ -39,7 +39,6 @@ class EventClassifier:
         sims = [_cos(vec, cv) for cv in self.class_vecs]
         i = max(range(len(sims)), key=lambda j: sims[j])
         if sims[i] < self.min_score:
-            return {"event_type": "normal", "label": "정상", "severity": 0, "score": round(sims[i], 3)}
+            return {"event_type": "normal", "label": "정상", "score": round(sims[i], 3)}
         c = self.classes[i]
-        return {"event_type": c["key"], "label": c["label"],
-                "severity": int(c.get("severity", 0)), "score": round(sims[i], 3)}
+        return {"event_type": c["key"], "label": c["label"], "score": round(sims[i], 3)}

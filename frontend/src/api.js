@@ -33,13 +33,10 @@ export const fmt = (s) => {
 export const levelClass = (level) => (level === '위험' ? 'crit' : level === '주의' ? 'warn' : 'ok')
 
 // 이벤트 유형 → 한국어 라벨 (칩 표시용). 클래스는 `tag ${event_type}` 로 직접 사용.
+// 키 = event_classes.json 의 6개 + normal/unknown.
 export const EVENT_KO = {
-  // AI-Hub GT 유형
   falldown: '쓰러짐', fight: '싸움', invasion: '침입', gathering: '군집',
   crowd: '인파밀집', flood: '침수',
-  // (주차장 가정 유형 — 호환)
-  fall: '낙상', loitering: '배회', vehicle_interaction: '차량접촉',
-  smoking: '흡연', flammable: '인화물', intrusion: '침입',
   normal: '정상', unknown: '미상',
 }
 export const eventLabel = (t) => EVENT_KO[t] || t || '정상'
