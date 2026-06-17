@@ -98,22 +98,6 @@ def serve_thumb(path: str):
     return FileResponse(rp)
 
 
-@app.get("/compare")
-def compare_page():
-    """VLM 캡션 비교 페이지(영상 + 3모델 구간별 캡션). 16프레임 색인 결과 검토용."""
-    return FileResponse(os.path.join(config.BASE_DIR, "compare.html"),
-                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
-
-
-@app.get("/compare-data")
-def compare_data():
-    for name in ("captions_v16.json", "captions_f16.json"):   # 16프레임 video(v16) 우선, 없으면 f16
-        p = os.path.join(config.MEMORY_DIR, name)
-        if os.path.exists(p):
-            return FileResponse(p)
-    raise HTTPException(404, "captions_*.json 없음 — dump_captions_json.py 먼저 실행")
-
-
 @app.get("/memory-status")
 def memory_status():
     try:
