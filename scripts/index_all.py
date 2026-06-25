@@ -1,36 +1,32 @@
-"""index_all.py — 데모용 다중 CCTV 색인. assets/embedding 의 영상을 outputs/vmem/videos 로
-복사하고 ChromaDB 에 색인한다. 각 video_id 는 cctv_meta 가 카메라/날짜를 파생한다(3×3 그리드용).
+"""index_all.py — 데모용 다중 CCTV 색인. 통합 DATA/videos 의 영상을 ChromaDB 에 색인한다.
+각 video_id 는 cctv_meta 가 카메라/날짜를 파생한다(그리드용). 영상은 DATA 에서 바로 읽는다(복사 없음).
 
 실행: CUDA_VISIBLE_DEVICES=0 LOAD_IN_4BIT=1 VLM_BACKEND=internvl3 MAX_SEGMENTS=12 MAX_DURATION=90 python index_all.py
 """
 import config
 
+import glob
 import os
-import shutil
 import traceback
 
 from memory import video_memory
 
-SRC = os.path.join(config.ASSETS_DIR, "embedding")
-VID = os.path.join(config.MEMORY_DIR, "videos")
-os.makedirs(VID, exist_ok=True)
+DATA_VIDEOS = os.path.join(os.path.dirname(config.BASE_DIR), "DATA", "videos")
 
-# 전체 7개 재색인. chroma 는 실행 전 비워 깨끗이 재생성. 없는 파일은 건너뜀.
+# 색인 대상 video_id(파일명, 확장자 제외). DATA/videos 하위 어디에 있든 재귀로 찾음.
 TODO = ["fire6", "machine_tipover2", "machine_tipover3", "people-detection",
         "person-bicycle-car-detection", "person_fall3", "person_fall4"]
 
 ok, fail = [], []
 for vid in TODO:
-    src = os.path.join(SRC, vid + ".mp4")
-    if not os.path.exists(src):
+    hits = glob.glob(os.path.join(DATA_VIDEOS, "**", vid + ".mp4"), recursive=True)
+    if not hits:
         print(f"[skip] 없음: {vid}", flush=True)
         continue
-    dst = os.path.join(VID, vid + ".mp4")
-    if not os.path.exists(dst):
-        shutil.copy(src, dst)
-    print(f"\n===== 색인 시작: {vid} =====", flush=True)
+    src = hits[0]
+    print(f"\n===== 색인 시작: {vid} ({src}) =====", flush=True)
     try:
-        r = video_memory.index_video(dst, video_id=vid)
+        r = video_memory.index_video(src, video_id=vid)
         print(f"[done] {vid}: {r}", flush=True)
         ok.append(vid)
     except Exception as e:

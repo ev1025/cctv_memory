@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import Console from './components/Console'
 import DateTimePicker from './components/DateTimePicker'
-import { listCameras } from './api'
+import { listCameras, listAlerts } from './api'
 
 const timeToSec = (t) => { const [h, m, s] = (t || '0:0:0').split(':').map(Number); return ((h || 0) * 3600 + (m || 0) * 60 + (s || 0)) % 86400 }
 const secToTime = (sec) => { sec = ((Math.floor(sec) % 86400) + 86400) % 86400; const p = (n) => String(n).padStart(2, '0'); return `${p(Math.floor(sec / 3600))}:${p(Math.floor((sec % 3600) / 60))}:${p(sec % 60)}` }
@@ -18,6 +18,7 @@ export default function App() {
   const [live, setLive] = useState(true)
   const [playing, setPlaying] = useState(false)   // 그리드 기본 정지(프레임, GPU 절약), 카메라 선택 시 재생
   const [marked, setMarked] = useState(null)      // 클릭한 이력/검색 결과 식별자 → 그 행 강조(재생 드리프트 무관)
+  const [alertCams, setAlertCams] = useState({})  // camera_id → 'danger' | 'warning' (그리드 테두리 경보)
 
   // 오늘 날짜면 현재 시각까지만(이후는 아직 녹화 전), 과거 날짜면 하루 전체
   const maxSecOf = () => (dateLabel === todayStr() ? nowWall() : 86400)
@@ -66,6 +67,23 @@ export default function App() {
     return () => clearInterval(id)
   }, [live, playing])
 
+  // 경보 카메라 폴링: /alerts 의 위험/주의를 카메라별로 모아 그리드 테두리(빨강/노랑)로 표시
+  useEffect(() => {
+    let stop = false
+    const sev = { '위험': 'danger', '주의': 'warning' }, rank = { warning: 1, danger: 2 }
+    const pull = async () => {
+      const j = await listAlerts(dateLabel)
+      if (stop) return
+      const map = {}
+      for (const a of (j.alerts || [])) {
+        const lv = sev[a.level]
+        if (lv && (!map[a.camera_id] || rank[lv] > rank[map[a.camera_id]])) map[a.camera_id] = lv
+      }
+      setAlertCams(map)
+    }
+    if (dateLabel) { pull(); const id = setInterval(pull, 5000); return () => { stop = true; clearInterval(id) } }
+  }, [dateLabel])
+
   const focused = !!focusCam
   const goHome = () => { setFocusCam(null); setDateLabel(todayStr()); seek(nowWall(), { live: true }) }
   return (
@@ -83,6 +101,7 @@ export default function App() {
       </div>
       <Console cameras={cameras} date={dateLabel} focusCam={focusCam} view={view} thermal={thermal}
                playlist={playlistOf(focusCam)} playing={playing} live={live} maxSec={maxSecOf()} marked={marked}
+               alertCams={alertCams}
                onSelectCamera={onSelectCamera} onSeekSeg={onSeekSeg} onScrub={onScrub}
                onFocusTime={onFocusTime} onGoLive={onGoLive}
                onTogglePlay={onTogglePlay} onStop={onStop} onStep={onStep} />

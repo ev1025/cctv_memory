@@ -72,13 +72,20 @@ def serve_video(video_id: str, type: str = "normal"):
 
     (열화상 실데이터가 없을 때도 PIP 가 항상 렌더되도록 폴백 — 프론트에서 CSS 필터로 열화상처럼 표시.)
     """
-    videos = os.path.join(config.MEMORY_DIR, "videos")
+    import glob
+    # 영상은 통합 DATA/videos 로 이전됨. 기존 vmem/videos(하위호환) → DATA/videos(재귀) 순 탐색.
+    data_videos = os.path.join(os.path.dirname(config.BASE_DIR), "DATA", "videos")
+    flat_roots = [os.path.join(config.MEMORY_DIR, "videos"), data_videos]
     names = [video_id + "__thermal", video_id] if type == "thermal" else [video_id]
     for name in names:
         for ext in (".mp4", ".avi", ".mov", ".mkv", ".webm"):
-            p = os.path.join(videos, name + ext)
-            if os.path.exists(p):
-                return FileResponse(p)
+            for root in flat_roots:
+                p = os.path.join(root, name + ext)
+                if os.path.exists(p):
+                    return FileResponse(p)
+            hits = glob.glob(os.path.join(data_videos, "**", name + ext), recursive=True)
+            if hits:
+                return FileResponse(hits[0])
     raise HTTPException(404, "video not found")
 
 
@@ -134,6 +141,61 @@ def alerts_ep(date: str = None, cams: str = None):
     import cctv_meta
     cam_set = {c.strip() for c in cams.split(",") if c.strip()} if cams else None
     return {"alerts": cctv_meta.build_alerts(_store().all_segments(), date=date or None, cams=cam_set)}
+
+
+@app.get("/recent-alerts")
+def recent_alerts_ep(camera: str, hours: int = 3, before_abs_s: int = None, limit: int = 20):
+    """[게이트웨이용] 알람 기준 최근 N시간 특이사건(해당 카메라). 화재 확정 시 직전 맥락 역추적.
+
+    abs_s(하루 내 절대초)가 있으면 [기준-Nh, 기준] 창으로 필터(시간순), 없으면(타임라인 미설정)
+    그 카메라 특이사건을 온도 높은 순 limit 개로 폴백.
+    """
+    import cctv_meta
+    alerts = cctv_meta.build_alerts(_store().all_segments(), cams={camera})
+    timed = [a for a in alerts if a.get("abs_s") is not None]
+    if timed:
+        hi = before_abs_s if before_abs_s is not None else max(a["abs_s"] for a in timed)
+        lo = hi - hours * 3600
+        win = sorted([a for a in timed if lo <= a["abs_s"] <= hi],
+                     key=lambda a: a["abs_s"], reverse=True)
+        return {"camera": camera, "hours": hours, "anchor_abs_s": hi, "alerts": win[:limit]}
+    return {"camera": camera, "hours": hours, "anchor_abs_s": None, "alerts": alerts[:limit]}
+
+
+@app.post("/register-event")
+def register_event_ep(camera_id: str = Form(...), caption: str = Form(...),
+                      event_type: str = Form("fire"), recorded_at: str = Form(None),
+                      thumb: str = Form(None)):
+    """[게이트웨이용] 외부에서 확정된 사건(예: 화재)을 이력 store 에 1구간으로 등록.
+
+    → 콘솔 /alerts·/history·자연어검색에 즉시 노출된다(별도 UI 불필요).
+    cctv_map.json 에 camera_id/recorded_at 를 매핑해 그 카메라·실시각으로 표시.
+    """
+    import cctv_meta
+    import json
+    from datetime import datetime
+    ts = recorded_at or datetime.now().isoformat(timespec="seconds")
+    safe = ts.replace(":", "").replace("-", "").replace("T", "_").replace(" ", "_")
+    video_id = f"evt_{camera_id}_{safe}"
+
+    # cctv_map.json 갱신(있으면 병합) → video_meta 가 이 카메라/시각으로 해석
+    mp = os.path.join(config.MEMORY_DIR, "cctv_map.json")
+    try:
+        m = json.load(open(mp, encoding="utf-8")) if os.path.exists(mp) else {}
+    except Exception:
+        m = {}
+    m[video_id] = {"camera_id": camera_id, "camera_name": camera_id, "recorded_at": ts}
+    os.makedirs(config.MEMORY_DIR, exist_ok=True)
+    with open(mp, "w", encoding="utf-8") as f:
+        json.dump(m, f, ensure_ascii=False, indent=1)
+
+    _store().add([{
+        "id": f"{video_id}:s0",
+        "document": caption,                                  # bge-m3 로 임베딩 → 검색됨
+        "metadata": {"video_id": video_id, "start_s": 0, "end_s": 5,
+                     "event_type": event_type, "thumb": thumb or "", "indexed_at": ts},
+    }])
+    return {"registered": True, "video_id": video_id, "camera_id": camera_id, "recorded_at": ts}
 
 
 @app.get("/history")

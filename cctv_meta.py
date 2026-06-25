@@ -133,7 +133,8 @@ def _synth_temp(seg):
     실데이터 연동 시 이 함수만 '해당 시각 열화상 최고온도 조회' 로 교체하면 된다.
     (참고: 화재 감지는 별도 열화상 카메라가 담당 — 여기 온도는 콘솔 표시용 합성값.)
     """
-    base = {"fight": 66.0, "falldown": 58.0, "crowd": 54.0, "invasion": 52.0,
+    base = {"fire": 72.0, "smoke": 60.0,
+            "fight": 66.0, "falldown": 58.0, "crowd": 54.0, "invasion": 52.0,
             "gathering": 48.0, "flood": 44.0, "normal": 36.0, "unknown": 36.0}
     t = base.get(seg.get("event_type") or "normal", 36.0)
     t += (int(seg.get("start_s") or 0) % 7) * 0.5            # 구간별 미세 변동(데모 현실감)
@@ -227,6 +228,10 @@ def build_alerts(all_segments, date=None, cams=None):
         if tl:
             placements = _clip_index().get(seg["video_id"], [])
             row_date = date or (label_dates()[0] if label_dates() else None)
+            if not placements:                  # 타임라인에 없는 외부 등록 사건(예: 화재 확정) → cctv_map 배치로 폴백
+                m = video_meta(seg["video_id"], seg.get("indexed_at"))
+                placements = [(m["camera_id"], None)]
+                cam_name.setdefault(m["camera_id"], m["camera_name"])
         else:
             m = video_meta(seg["video_id"], seg.get("indexed_at"))
             if date and m["date"] != date:

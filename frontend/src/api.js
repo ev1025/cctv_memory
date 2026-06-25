@@ -5,6 +5,14 @@ export async function listCameras() {
   catch { return { cameras: [], dates: [] } }
 }
 
+export async function listAlerts(date, cams) {
+  const qs = new URLSearchParams()
+  if (date) qs.set('date', date)
+  if (cams && cams.length) qs.set('cams', cams.join(','))
+  try { const r = await fetch('/alerts?' + qs.toString()); return await r.json() }
+  catch { return { alerts: [] } }
+}
+
 export async function listHistory(date, cams) {
   const qs = new URLSearchParams()
   if (date) qs.set('date', date)

@@ -7,7 +7,7 @@ import HistoryTimeline from './HistoryTimeline'
 import SituationLog from './SituationLog'
 
 // 본문: [좌(그리드 or 플레이어+24h바+컨트롤) | 우(검색 + 로그)]. 24h 바 = 유일한 시간 컨트롤.
-export default function Console({ cameras, date, focusCam, view, thermal, playlist, playing, live, maxSec = 86400, marked,
+export default function Console({ cameras, date, focusCam, view, thermal, playlist, playing, live, maxSec = 86400, marked, alertCams = {},
                                  onSelectCamera, onSeekSeg, onScrub, onFocusTime, onGoLive,
                                  onTogglePlay, onStop, onStep }) {
   const focused = !!focusCam
@@ -16,7 +16,7 @@ export default function Console({ cameras, date, focusCam, view, thermal, playli
     return (
       <div className="layout focusview">
         <div className="col player-col">
-          <CameraGrid cameras={cameras} thermal={thermal} viewSec={view.sec} viewToken={view.token}
+          <CameraGrid cameras={cameras} alertCams={alertCams} thermal={thermal} viewSec={view.sec} viewToken={view.token}
                       playing={playing} live={live} maxSec={maxSec} onSelect={onSelectCamera} />
           <TimeScrubber absSec={view.sec} maxSec={maxSec} live={live} onGoLive={onGoLive} onScrub={onScrub} />
           <PlayerControls playing={playing} live={live} onBack10={() => onStep(-10)}
